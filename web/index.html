@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="PicShelf">
@@ -17,8 +17,22 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,600;1,600&display=swap"
     rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-  <link rel="stylesheet" href="style.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <link rel="stylesheet" href="style.css?v=20261010_1915">
+  <script src="jszip.min.js"></script>
+  <script src="zip_worker_code.js"></script>
+  <script>
+    if (typeof JSZip === 'undefined') {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"><\/script>');
+    }
+  </script>
+  <script src="pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+    } else {
+      document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"><\/script>');
+    }
+  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
   <!-- Google Play In-App Billing Bridge -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1/selfie_segmentation.js" crossorigin="anonymous"></script>
@@ -106,7 +120,7 @@
                 </svg>
                 <span data-i18n="dock_camera">Camera</span>
               </button>
-              <button class="dock-hero-btn btn-photo-upload" id="importPhotosBtn" title="Upload photos from device" onclick="triggerGalleryImport()">
+              <button class="dock-hero-btn btn-photo-upload" id="importPhotosBtn" title="Upload photos, videos & audio from device" onclick="triggerGalleryImport()">
                 <svg class="dock-hero-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
                   <path d="M12 12v9"/>
@@ -114,9 +128,11 @@
                 </svg>
                 <span data-i18n="dock_upload">Upload</span>
               </button>
-              <input type="file" id="cameraFileInput" accept="image/*" capture="environment"
+              <input type="file" id="cameraFileInput" accept="image/*,video/*" capture="environment"
                 style="position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;">
-              <input type="file" id="imageFileInput" accept="image/*" multiple
+              <input type="file" id="imageFileInput" accept="*/*,image/*,video/*,audio/*,.zip,.tar,.tar.gz,.tgz,.gz,.pdf,application/zip,application/x-zip-compressed,application/x-tar,application/tar,application/gzip,application/x-gzip,application/pdf" multiple
+                style="position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;">
+              <input type="file" id="videoFileInput" accept="*/*" multiple
                 style="position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none;">
             </div>
           </div>
@@ -294,6 +310,10 @@
             </button>
             <span class="selection-count" id="selectionCountText" data-i18n="dock_selected_zero">0 Selected</span>
             <div class="selection-actions">
+              <button class="icon-btn highlight" id="tagSelectedBtn" onclick="tagSelectedGalleryPhotos()"
+                title="Organize into Albums / Tags" aria-label="Organize into Albums" data-i18n-title="dock_bulk_tag_title">
+                <i class="fa-solid fa-tags"></i>
+              </button>
               <button class="icon-btn" id="renameSelectedBtn" onclick="renameSelectedGalleryPhoto()"
                 title="Rename Photo" data-i18n-title="detail_rename" style="display: none;">
                 <i class="fa-solid fa-pen-to-square"></i>
@@ -309,9 +329,6 @@
               <button class="icon-btn vip-action-btn" id="moveCopySelectedBtn" onclick="openMoveCopyModal()" title="Move or Copy to Another Album (Pro)" aria-label="Move or Copy to Album">
                 <i class="fa-solid fa-folder-tree"></i>
                 <span class="btn-vip-dot" title="PicShelf Pro Feature"><svg class="aura-luxury-crown" width="10" height="10" viewBox="0 0 20 20" fill="currentColor"><path d="M3.2 15.6h13.6a.7.7 0 0 0 .7-.7v-.2a.7.7 0 0 0-.7-.7H3.2a.7.7 0 0 0-.7.7v.2a.7.7 0 0 0 .7.7zm-.9-3.7a.7.7 0 0 0 .66.45h14.08a.7.7 0 0 0 .66-.45l1.6-4.6a.7.7 0 0 0-1.05-.82l-3.8 2.45-3.15-5.1a.7.7 0 0 0-1.2 0l-3.15 5.1-3.8-2.45a.7.7 0 0 0-1.05.82l1.6 4.6z"/></svg></span>
-              </button>
-              <button class="icon-btn" id="exportZipBtn" title="Export to ZIP" data-i18n-title="gallery_download_zip">
-                <i class="fa-solid fa-file-zipper"></i>
               </button>
               <button class="icon-btn" id="shareSelectedBtn" title="Share Native" data-i18n-title="detail_share">
                 <i class="fa-solid fa-share-nodes"></i>
@@ -347,6 +364,17 @@
               <span class="chip-count" id="favMomentsCount">0</span>
             </button>
 
+            <!-- Untagged Media Filter/Select Chip with live count -->
+            <button type="button" class="filter-chip untagged-filter-chip" id="selectUntaggedBtn"
+              onclick="toggleSelectUntaggedGalleryPhotos()"
+              title="Select all untagged media in gallery"
+              aria-label="Select Untagged Media"
+              data-i18n-title="gallery_select_untagged_title" style="display: none;">
+              <i class="fa-solid fa-tags" style="color: #fb7185; font-size: 11px;"></i>
+              <span id="selectUntaggedBtnText" data-i18n="gallery_select_untagged">Untagged</span>
+              <span class="chip-count untagged-count-badge" id="untaggedCountBadge">0</span>
+            </button>
+
             <!-- Dynamic Tag Chips Container -->
             <div id="dynamicTagFilterContainer" class="tag-chips-wrapper">
               <!-- Rendered by JS -->
@@ -359,7 +387,7 @@
 
           <!-- Gallery Subheader with Actions -->
           <div class="gallery-info-bar">
-            <div class="gallery-info-left" style="display: flex; align-items: center; gap: 8px;">
+            <div class="gallery-info-left">
               <span id="galleryCountText" class="photos-count-label">0 photos found</span>
             </div>
 
@@ -427,6 +455,9 @@
                 <button class="text-link-btn" id="shareFilteredBtn" title="Share filtered photos" aria-label="Share filtered photos" data-i18n-title="gallery_share_filtered_title" data-i18n-aria="gallery_share_filtered_title">
                   <i class="fa-solid fa-arrow-up-from-bracket"></i> <span data-i18n="detail_share">Share</span>
                 </button>
+                <button class="text-link-btn danger" id="deleteFilteredBtn" title="Delete from albums or trash" aria-label="Delete from albums or trash" data-i18n-title="detail_trash" data-i18n-aria="detail_trash">
+                  <i class="fa-solid fa-trash-can"></i> <span data-i18n="detail_trash">Delete</span>
+                </button>
               </div>
             </div>
           </div>
@@ -479,7 +510,7 @@
             <!-- Rendered by JS -->
           </div>
 
-          <input type="file" id="albumDirectFileInput" accept="image/*" multiple style="display: none;" onchange="handleAlbumDirectFileInput(event)">
+          <input type="file" id="albumDirectFileInput" accept="*/*,image/*,video/*,audio/*,.zip,.tar,.tar.gz,.tgz,.gz,.pdf,application/zip,application/x-zip-compressed,application/x-tar,application/tar,application/gzip,application/x-gzip,application/pdf" multiple style="display: none;" onchange="handleAlbumDirectFileInput(event)">
         </section>
 
         <!-- TAB 2: ALBUMS & TAGS SCREEN (Separated Views) -->
@@ -674,14 +705,14 @@
           <!-- Trashed Albums Section -->
           <div id="trashAlbumsSection" class="trash-albums-container" style="display: none;">
             <div class="trash-section-title">
-              <i class="fa-solid fa-folder-closed"></i> Trashed Albums (<span id="trashAlbumsCount">0</span>)
+              <i class="fa-solid fa-folder-closed"></i> <span data-i18n="trash_albums_section_title">Trashed Albums</span> (<span id="trashAlbumsCount">0</span>)
             </div>
             <div class="trash-albums-grid" id="trashAlbumsGrid"></div>
           </div>
 
           <!-- Trashed Photos Title Header (When albums also exist) -->
           <div id="trashPhotosTitle" class="trash-section-title" style="display: none;">
-            <i class="fa-solid fa-images"></i> Trashed Photos (<span id="trashPhotosSectionCount">0</span>)
+            <i class="fa-solid fa-images"></i> <span data-i18n="trash_photos_section_title">Trashed Photos</span> (<span id="trashPhotosSectionCount">0</span>)
           </div>
 
           <div class="photo-grid gallery-grid-elegant" id="trashPhotoGrid">
@@ -1101,15 +1132,25 @@
                   <span class="storage-used" id="storageUsageText">Calculating...</span>
                 </div>
                 <div class="storage-progress-track">
-                  <div class="storage-progress-bar" id="storageProgressBar" style="width: 28%;"></div>
+                  <div class="storage-progress-bar" id="storageProgressBar" style="width: 0%;"></div>
                 </div>
-                <div class="storage-legend">
+                <div class="storage-legend" id="storageLegendContainer">
                   <span><i class="fa-solid fa-circle" style="color:#f43f5e"></i> <span data-i18n="settings_legend_photos">Photos</span> (<span
                       id="storagePhotoCount">0</span>)</span>
+                  <span id="storageVideoLegend"><i class="fa-solid fa-circle" style="color:#a855f7"></i> <span data-i18n="settings_legend_videos">Videos</span> (<span
+                      id="storageVideoCount">0</span>)</span>
+                  <span id="storageAudioLegend"><i class="fa-solid fa-circle" style="color:#38bdf8"></i> <span data-i18n="settings_legend_audios">Audios</span> (<span
+                      id="storageAudioCount">0</span>)</span>
                   <span><i class="fa-solid fa-circle" style="color:#fbbf24"></i> <span data-i18n="settings_legend_trash">Trash</span> (<span
                       id="storageTrashCount">0</span>)</span>
                   <span><i class="fa-solid fa-circle" style="color:#10b981"></i> <span data-i18n="settings_legend_tags">Tags</span> (<span
                       id="storageTagCount">0</span>)</span>
+                </div>
+                <div class="storage-media-breakdown" id="storageMediaBreakdown" style="display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); font-size: 11px; color: var(--text-muted);">
+                  <span id="breakdownPhotosText"><i class="fa-regular fa-image" style="color:#f43f5e; margin-right:4px;"></i> Photos: 0 MB</span>
+                  <span id="breakdownVideosText"><i class="fa-solid fa-film" style="color:#a855f7; margin-right:4px;"></i> Videos: 0 MB</span>
+                  <span id="breakdownAudiosText" style="display: none;"><i class="fa-solid fa-music" style="color:#38bdf8; margin-right:4px;"></i> Audio: 0 MB</span>
+                  <span id="breakdownTrashText" style="display: none;"><i class="fa-solid fa-trash-can" style="color:#fbbf24; margin-right:4px;"></i> Trash: 0 MB</span>
                 </div>
               </div>
 
@@ -1297,6 +1338,22 @@
               <canvas id="detailBackdropCanvas" class="detail-backdrop-canvas" style="display: none;"></canvas>
               <canvas id="detailSubjectCanvas" class="detail-subject-canvas" style="display: none;"></canvas>
               <img id="detailImage" src="" alt="Photo Full View" draggable="false">
+              <video id="detailVideo" playsinline preload="metadata" style="display: none;" draggable="false"></video>
+              
+              <!-- Luxury Video Player Transport & Scrubber HUD -->
+              <div class="video-player-overlay" id="videoPlayerOverlay" style="display: none;">
+                <!-- Large Center Play/Pause Touch Target -->
+                <button type="button" class="video-center-play-btn" id="videoCenterPlayBtn" aria-label="Play or Pause Video">
+                  <i class="fa-solid fa-play"></i>
+                </button>
+                
+                <!-- Floating Video Metadata Pill Badge (Quality, Duration, FPS) -->
+                <div class="video-meta-badge" id="videoMetaBadge">
+                  <span class="video-badge-pill"><i class="fa-solid fa-film"></i> <span id="videoBadgeQuality">1080p HD</span></span>
+                  <span class="video-badge-pill video-badge-fps" id="videoBadgeFps">60 FPS</span>
+                </div>
+
+              </div>
               <div class="detail-ai-segment-badge" id="detailAiSegmentBadge" style="display: none !important;">
                 <i class="fa-solid fa-wand-magic-sparkles"></i>
                 <span id="detailAiSegmentText" data-i18n="detail_subject_detected">AI Subject Isolated</span>
@@ -1574,7 +1631,7 @@
 
               <!-- Subpanel: Custom Image Drop / Gallery Picker -->
               <div class="studio-backdrop-subpanel" id="studioBackdropSubImage" style="display: none;">
-                <input type="file" id="studioBackdropFileInput" accept="image/*" style="display: none;">
+                <input type="file" id="studioBackdropFileInput" accept="*/*" style="display: none;">
                 <div class="studio-backdrop-dropzone" id="studioBackdropDropzone" title="Drop image here or click to browse">
                   <div class="dropzone-content" id="studioBackdropDropzonePrompt">
                     <i class="fa-solid fa-cloud-arrow-up dropzone-icon"></i>
@@ -1812,6 +1869,87 @@
                 </div>
               </div>
             </div>
+
+            <!-- Tool Panel: Trim & Video Tools (When in Video Mode) -->
+            <div class="studio-tool-panel" id="studioPanelTrim" style="display: none;">
+              <div class="studio-subnav-pills" id="studioTrimSubnav">
+                <button type="button" class="studio-subnav-btn active" data-sub="range" id="studioTrimSubRangeBtn" title="Trim Range" data-i18n-title="trim_tab_range"><i class="fa-solid fa-scissors"></i> <span data-i18n="trim_tab_range">Trim Range</span></button>
+                <button type="button" class="studio-subnav-btn" data-sub="poster" id="studioTrimSubPosterBtn" title="Poster Frame" data-i18n-title="trim_tab_poster"><i class="fa-solid fa-image"></i> <span data-i18n="trim_tab_poster">Poster Frame</span></button>
+                <button type="button" class="studio-subnav-btn" data-sub="audio" id="studioTrimSubAudioBtn" title="Audio Track" data-i18n-title="trim_tab_audio"><i class="fa-solid fa-volume-high"></i> <span data-i18n="trim_tab_audio">Audio Track</span></button>
+              </div>
+
+              <!-- Subpanel 1: Trim Range -->
+              <div class="studio-trim-subpanel" id="studioTrimSubRange">
+                <div class="trim-timeline-visual">
+                  <div class="trim-timeline-strip" id="trimTimelineStrip">
+                    <div class="trim-timeline-shade left" id="trimShadeLeft" style="width: 0%;"></div>
+                    <div class="trim-timeline-highlight" id="trimRangeHighlight" style="left: 0%; width: 100%;"></div>
+                    <div class="trim-timeline-shade right" id="trimShadeRight" style="width: 0%;"></div>
+                    <div class="trim-playhead" id="trimTimelinePlayhead" style="left: 0%;"></div>
+                  </div>
+                </div>
+
+                <div class="trim-sliders-dual-row">
+                  <div class="trim-handle-box">
+                    <span class="trim-time-label"><i class="fa-solid fa-play"></i> <span data-i18n="trim_start_label">Start:</span></span>
+                    <span class="trim-time-val" id="trimStartTimeVal">00:00.0</span>
+                    <input type="range" class="studio-slider trim-range-slider" id="trimStartSlider" min="0" max="100" value="0" step="0.1">
+                  </div>
+                  <div class="trim-handle-box">
+                    <span class="trim-time-label"><i class="fa-solid fa-flag-checkered"></i> <span data-i18n="trim_end_label">End:</span></span>
+                    <span class="trim-time-val" id="trimEndTimeVal">00:06.0</span>
+                    <input type="range" class="studio-slider trim-range-slider" id="trimEndSlider" min="0" max="100" value="100" step="0.1">
+                  </div>
+                </div>
+
+                <div class="trim-status-pill">
+                  <span id="trimClipDurationPill"><i class="fa-solid fa-clock"></i> <span id="trimClipDurationText">Clip Length: 6.0s</span></span>
+                  <button type="button" class="btn btn-xs btn-glass" id="trimLoopPreviewBtn" title="Loop only trimmed segment" data-i18n-title="trim_loop_btn_title">
+                    <i class="fa-solid fa-repeat"></i> <span data-i18n="trim_loop_btn">Loop Trim</span>
+                  </button>
+                </div>
+
+                <div class="trim-actions-row">
+                  <button type="button" class="btn btn-sm btn-primary" id="applyTrimBtn" data-i18n-title="trim_apply_btn">
+                    <i class="fa-solid fa-scissors"></i> <span data-i18n="trim_apply_btn">Apply Trim to Video</span>
+                  </button>
+                  <button type="button" class="btn btn-sm btn-glass" id="resetTrimBtn" data-i18n-title="trim_reset_btn">
+                    <i class="fa-solid fa-rotate-left"></i> <span data-i18n="trim_reset_btn">Reset Range</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Subpanel 2: Cover Poster Frame -->
+              <div class="studio-trim-subpanel" id="studioTrimSubPoster" style="display: none;">
+                <div class="poster-frame-picker-box">
+                  <p class="poster-hint" data-i18n="trim_poster_hint">Scrub the player to your favorite moment and tap below to set the card cover thumbnail:</p>
+                  <div class="poster-actions-row">
+                    <button type="button" class="btn btn-sm btn-primary" id="setVideoPosterFrameBtn" data-i18n-title="trim_set_poster_btn">
+                      <i class="fa-solid fa-camera"></i> <span data-i18n="trim_set_poster_btn">Set Current Frame as Poster</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Subpanel 3: Audio Settings -->
+              <div class="studio-trim-subpanel" id="studioTrimSubAudio" style="display: none;">
+                <div class="trim-audio-toggle-card" id="trimAudioToggleCard" style="cursor: pointer;">
+                  <div class="audio-toggle-desc">
+                    <strong data-i18n="trim_remove_audio_title">Remove Audio Track</strong>
+                    <span data-i18n="trim_remove_audio_desc">Extract and save this video completely without audio</span>
+                  </div>
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="trimMuteExportCheckbox">
+                    <span class="toggle-slider round"></span>
+                  </label>
+                </div>
+                <div class="trim-actions-row" style="margin-top: 14px;">
+                  <button type="button" class="btn btn-sm btn-primary" id="saveMutedVideoCopyBtn" title="Save a copy of this video with the audio track removed" data-i18n-title="trim_save_no_audio_hint">
+                    <i class="fa-solid fa-volume-xmark"></i> <span data-i18n="trim_save_no_audio_btn">Save Video Without Audio</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- NanoScope Collapsible Tools Handle & Fold Bar -->
@@ -1823,6 +1961,127 @@
                 <span data-i18n="nanoscope_foldable_tools">Tools & Actions</span>
               </span>
               <span class="nanoscope-dock-fold-chevron"><i class="fa-solid fa-chevron-up"></i></span>
+            </div>
+          </div>
+
+          <!-- Video Transport Controls Bar (Static Dock above Photo Edit Bar) -->
+          <div class="video-controls-bar" id="videoControlsBar" style="display: none;">
+            <!-- Scrubber Row -->
+            <div class="video-scrubber-row">
+              <span class="video-time-text" id="videoCurrentTime">00:00</span>
+              <div class="video-scrubber-track" id="videoScrubberTrack">
+                <div class="video-scrubber-buffered" id="videoScrubberBuffered"></div>
+                <div class="video-scrubber-progress" id="videoScrubberProgress"></div>
+                <div class="video-scrubber-handle" id="videoScrubberHandle"></div>
+                <div class="video-trim-marker-range" id="videoTrimMarkerRange" style="display: none;"></div>
+              </div>
+              <span class="video-time-text" id="videoTotalDuration">00:00</span>
+            </div>
+
+            <!-- Transport Controls & Quick Tool Suite -->
+            <div class="video-btns-row">
+              <div class="video-btns-left">
+                <button type="button" class="video-ctrl-btn main-play-btn" id="videoPlayPauseBtn" title="Play / Pause" aria-label="Play or Pause">
+                  <i class="fa-solid fa-play"></i>
+                </button>
+                <button type="button" class="video-ctrl-btn" id="videoRestartBtn" title="Restart / Replay" aria-label="Restart">
+                  <i class="fa-solid fa-rotate-left"></i>
+                </button>
+                <button type="button" class="video-ctrl-btn" id="videoStepPrevBtn" title="Step Back 1 Frame (-0.05s)">
+                  <i class="fa-solid fa-backward-step"></i>
+                </button>
+                <button type="button" class="video-ctrl-btn" id="videoStepNextBtn" title="Step Forward 1 Frame (+0.05s)">
+                  <i class="fa-solid fa-forward-step"></i>
+                </button>
+              </div>
+
+              <div class="video-btns-right">
+                <!-- Playback Speed Chip & Slider Popup -->
+                <div class="video-speed-wrapper">
+                  <button type="button" class="video-ctrl-btn video-speed-btn" id="videoSpeedBtn" title="Playback Speed" aria-label="Playback Speed">
+                    <span id="videoSpeedLabel">1x</span>
+                  </button>
+                  <div class="video-speed-menu" id="videoSpeedMenu" style="display: none;">
+                    <div class="speed-popup-header">
+                      <span class="speed-title">Speed</span>
+                      <span class="speed-badge" id="videoSpeedBadge">1.0x</span>
+                    </div>
+                    <div class="speed-slider-container">
+                      <input type="range" id="videoSpeedSlider" min="0.25" max="3.0" value="1.0" step="0.05" class="video-speed-range" aria-label="Playback Speed Slider">
+                      <div class="speed-markers">
+                        <span class="speed-mark" data-speed="0.5">0.5x</span>
+                        <span class="speed-mark active" data-speed="1.0">1.0x</span>
+                        <span class="speed-mark" data-speed="1.5">1.5x</span>
+                        <span class="speed-mark" data-speed="2.0">2.0x</span>
+                        <span class="speed-mark fast" data-speed="3.0">3.0x ⚡</span>
+                      </div>
+                    </div>
+                    <div class="speed-quick-presets">
+                      <button type="button" class="video-speed-opt" data-speed="0.5">0.5x</button>
+                      <button type="button" class="video-speed-opt" data-speed="0.75">0.75x</button>
+                      <button type="button" class="video-speed-opt active" data-speed="1.0">1.0x</button>
+                      <button type="button" class="video-speed-opt" data-speed="1.25">1.25x</button>
+                      <button type="button" class="video-speed-opt" data-speed="1.5">1.5x</button>
+                      <button type="button" class="video-speed-opt" data-speed="2.0">2.0x</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Volume / Mute Toggle & 200% Booster Popup -->
+                <div class="video-volume-wrapper">
+                  <button type="button" class="video-ctrl-btn" id="videoMuteBtn" title="Volume & Boost (Up to 200%)" aria-label="Volume & Boost">
+                    <i class="fa-solid fa-volume-high"></i>
+                  </button>
+                  <div class="video-volume-popup" id="videoVolumePopup" style="display: none;">
+                    <div class="volume-popup-header">
+                      <span class="volume-title">Volume</span>
+                      <span class="volume-percent-badge" id="videoVolumeBadge">100%</span>
+                    </div>
+                    <div class="volume-slider-container">
+                      <input type="range" id="videoVolumeSlider" min="0" max="200" value="100" step="5" class="video-volume-range" aria-label="Volume Level Slider">
+                      <div class="volume-boost-markers">
+                        <span class="vol-mark" data-vol="0">0%</span>
+                        <span class="vol-mark" data-vol="50">50%</span>
+                        <span class="vol-mark" data-vol="100">100%</span>
+                        <span class="vol-mark boost" data-vol="150">150%</span>
+                        <span class="vol-mark boost" data-vol="200">200% ⚡</span>
+                      </div>
+                    </div>
+                    <div class="volume-quick-presets">
+                      <button type="button" class="vol-preset-btn" data-vol="0"><i class="fa-solid fa-volume-xmark"></i> Mute</button>
+                      <button type="button" class="vol-preset-btn" data-vol="100"><i class="fa-solid fa-volume-high"></i> 100%</button>
+                      <button type="button" class="vol-preset-btn boost" data-vol="200"><i class="fa-solid fa-bolt"></i> 200%</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Loop Toggle -->
+                <button type="button" class="video-ctrl-btn" id="videoLoopBtn" title="Loop Playback">
+                  <i class="fa-solid fa-repeat"></i>
+                </button>
+
+                <!-- Frame Snapshot / Capture Button -->
+                <button type="button" class="video-ctrl-btn video-snapshot-btn" id="videoSnapshotBtn" title="Capture High-Res Photo from Video Frame">
+                  <i class="fa-solid fa-camera"></i>
+                </button>
+
+                <!-- Full Screen Button -->
+                <button type="button" class="video-ctrl-btn video-fullscreen-btn" id="videoFullscreenBtn" title="Full Screen" aria-label="Full Screen">
+                  <i class="fa-solid fa-expand"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Video & Trim Collapsible Tools Fold Bar (Allows video to have max space during trim or playback) -->
+          <div class="video-dock-fold-bar" id="videoDockFoldBar" onclick="toggleVideoDockFold()" title="Tap to expand / collapse tools">
+            <div class="video-dock-drag-handle"></div>
+            <div class="video-dock-fold-info">
+              <span class="video-dock-fold-label">
+                <i class="fa-solid fa-sliders"></i>
+                <span data-i18n="nanoscope_foldable_tools">Tools & Actions</span>
+              </span>
+              <span class="video-dock-fold-chevron"><i class="fa-solid fa-chevron-up"></i></span>
             </div>
           </div>
 
@@ -1856,6 +2115,11 @@
             <button type="button" class="detail-edit-tool-btn action-backdrop" id="detailEditBackdropBtn" data-tool="backdrop" title="Backdrop" data-i18n-title="detail_edit_backdrop" aria-label="Backdrop" data-i18n-aria="detail_edit_backdrop">
               <span class="edit-tool-icon"><i class="fa-solid fa-layer-group"></i></span>
               <span class="edit-tool-label" data-i18n="detail_edit_backdrop">Backdrop</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-trim" id="detailEditTrimBtn" data-tool="trim" title="Trim Video" data-i18n-title="detail_edit_trim_title" aria-label="Trim Video" data-i18n-aria="detail_edit_trim_title" style="display: none;">
+              <span class="edit-tool-icon"><i class="fa-solid fa-scissors"></i></span>
+              <span class="edit-tool-label" data-i18n="detail_edit_trim">Trim</span>
               <span class="edit-tool-active-dot"></span>
             </button>
           </div>
@@ -1938,10 +2202,11 @@
       <div class="modal-overlay dialog-mode" id="batchTagModal" style="display: none;">
         <div class="dialog-card">
           <div class="dialog-header">
-            <h3 data-i18n="dock_bulk_tag_title">Organize into Albums</h3>
+            <h3 data-i18n="dock_bulk_tag_title">1-Tap Bulk Tag to Album</h3>
             <button class="close-dialog-btn" id="closeBatchTagBtn" title="Close" data-i18n-title="modal_close" aria-label="Close" data-i18n-aria="modal_close"><i class="fa-solid fa-xmark"></i></button>
           </div>
-          <p class="dialog-desc" data-i18n="dock_hint_default">Select tags to apply to selected photos and move them to the Gallery.</p>
+          <div class="batch-tag-scroll-body">
+          <p class="dialog-desc" data-i18n="dock_hint_default">Tap photos to select, then tap album</p>
           
           <!-- Smart Location Suggestions Section (Chips) in Tag Card Modal -->
           <div class="batch-location-container" id="batchLocationContainer" style="display: none;">
@@ -1967,9 +2232,10 @@
             <input type="text" id="batchNewTagInput" placeholder="Create tag (e.g. Birthday)..." data-i18n-placeholder="tag_input_placeholder" autocomplete="off">
             <button class="btn btn-sm btn-outline" id="batchCreateTagBtn" data-i18n="tag_btn_add">Add</button>
           </div>
+          </div>
           <div class="dialog-buttons">
             <button class="btn btn-outline" id="cancelBatchTagBtn" data-i18n="crop_cancel">Cancel</button>
-            <button class="btn btn-primary" id="confirmBatchTagBtn" data-i18n="dock_tag_and_save">Save to Gallery</button>
+            <button class="btn btn-primary" id="confirmBatchTagBtn" data-i18n="dock_tag_and_save">Tag & Save</button>
           </div>
         </div>
       </div>
@@ -2118,6 +2384,121 @@
                 <i class="fa-solid fa-arrow-left"></i> <span data-i18n="albums_delete_back_btn">Back to Gallery</span>
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Media Multi-Album Delete Choice Modal -->
+      <div class="modal-overlay dialog-mode" id="mediaDeleteChoiceModal" style="display: none;">
+        <div class="dialog-card lux-delete-modal-card">
+          <div class="dialog-header" style="margin-bottom: 14px;">
+            <div>
+              <span class="dialog-eyebrow" style="color: var(--accent-rose);"><i class="fa-solid fa-layer-group" style="margin-right: 6px;"></i><span data-i18n="delete_modal_eyebrow">DELETE OPTIONS</span></span>
+              <h3 class="dialog-title" id="mediaDeleteModalTitle" data-i18n="delete_modal_title_single">Delete from Album</h3>
+            </div>
+            <button class="close-dialog-btn" onclick="closeMediaDeleteChoiceModal()" title="Close" data-i18n-title="modal_close" aria-label="Close" data-i18n-aria="modal_close">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+
+          <!-- Media summary preview card -->
+          <div class="lux-delete-summary-card" id="mediaDeletePreviewCard">
+            <img id="mediaDeleteThumb" src="" alt="Thumbnail" class="lux-delete-summary-thumb">
+            <div style="flex: 1; min-width: 0;">
+              <h4 id="mediaDeleteName" class="lux-delete-media-title" style="margin: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Media Title</h4>
+              <p id="mediaDeleteAlbumSummary" style="margin: 2px 0 0; font-size: 12px; color: var(--text-muted);" data-i18n="delete_summary_single_photo">Present in 2 albums</p>
+            </div>
+          </div>
+
+          <p class="dialog-desc" id="mediaDeletePromptDesc" style="margin-bottom: 14px; font-size: 13px; line-height: 1.45; color: var(--text-secondary);" data-i18n="delete_prompt_single_default">
+            Where would you like to delete these items from?
+          </p>
+
+          <!-- Primary Choice Cards (Selectable First) -->
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px;" id="mediaDeleteOptionsGroup">
+            <!-- Option 1: Remove from Current / Selected Album(s) Only -->
+            <div role="button" tabindex="0" class="lux-delete-choice-card" id="mediaDeleteCurrentOnlyBtn" onclick="selectDeleteOption('current')" onkeydown="if(event.key==='Enter'||event.key===' ')selectDeleteOption('current')">
+              <div class="lux-choice-icon-box">
+                <i class="fa-solid fa-folder-minus"></i>
+              </div>
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px;">
+                  <span id="mediaDeleteCurrentOnlyTitle" data-i18n="delete_opt_remove_from_selected_albums">Remove from Selected Albums</span>
+                  <span class="lux-choice-badge badge-safe" data-i18n="delete_badge_safe">SAFE</span>
+                </div>
+                <div id="mediaDeleteCurrentOnlyDesc" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;" data-i18n="delete_desc_remove_tags_default">
+                  Removes album tags (untagged, keeps in All Moments).
+                </div>
+              </div>
+              <div class="lux-choice-radio" id="mediaDeleteCurrentRadio">
+                <i class="fa-solid fa-check"></i>
+              </div>
+            </div>
+
+            <!-- Option 2: Delete from All Albums & Trash -->
+            <div role="button" tabindex="0" class="lux-delete-choice-card" id="mediaDeleteAllTrashBtn" onclick="selectDeleteOption('trash')" onkeydown="if(event.key==='Enter'||event.key===' ')selectDeleteOption('trash')">
+              <div class="lux-choice-icon-box">
+                <i class="fa-solid fa-trash-can"></i>
+              </div>
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px;">
+                  <span data-i18n="delete_opt_trash_title">Delete from All Albums &amp; Trash</span>
+                  <span class="lux-choice-badge badge-trash" data-i18n="delete_badge_trash">TRASH</span>
+                </div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;" data-i18n="delete_opt_trash_desc">
+                  Move to Recycle Bin (can restore anytime).
+                </div>
+              </div>
+              <div class="lux-choice-radio" id="mediaDeleteTrashRadio">
+                <i class="fa-solid fa-check"></i>
+              </div>
+            </div>
+
+            <!-- Option 3: Customize Specific Albums (Visible for multi-album media) -->
+            <div role="button" tabindex="0" class="lux-delete-choice-card" id="mediaDeleteCustomCard" onclick="selectDeleteOption('custom')" onkeydown="if(event.key==='Enter'||event.key===' ')selectDeleteOption('custom')" style="display: none;">
+              <div class="lux-choice-icon-box">
+                <i class="fa-solid fa-sliders"></i>
+              </div>
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px;">
+                  <span data-i18n="delete_opt_custom_title">Choose Specific Albums</span>
+                  <span class="lux-choice-badge badge-custom" data-i18n="delete_badge_custom">CUSTOM</span>
+                </div>
+                <div id="mediaDeleteCustomDesc" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;" data-i18n="delete_opt_custom_desc">
+                  Pick exactly which albums to detach from.
+                </div>
+              </div>
+              <div class="lux-choice-radio" id="mediaDeleteCustomRadio">
+                <i class="fa-solid fa-check"></i>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section: Custom Albums Selector Drawer (Luxury Redesign) -->
+          <div id="mediaDeleteCustomSection" class="lux-customize-drawer" style="display: none;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px;" data-i18n="delete_drawer_title">Select Albums to Detach</span>
+              <button type="button" class="btn btn-ghost" id="mediaDeleteToggleAllCustomBtn" onclick="toggleAllMediaDeleteCustomCheckboxes()" style="padding: 2px 8px; font-size: 11px; color: var(--accent-rose); border-radius: 8px;" data-i18n="delete_drawer_toggle_all">
+                Toggle All
+              </button>
+            </div>
+            <div id="mediaDeleteAlbumsList" style="max-height: 170px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px;">
+              <!-- Rendered dynamically as luxury album chips -->
+            </div>
+            <!-- Keep hidden fallback for backward compatibility -->
+            <button type="button" id="mediaDeleteApplyCustomBtn" onclick="executeMediaDeleteCustomSelection()" style="display: none;"></button>
+            <button type="button" id="mediaDeleteToggleCustomBtn" onclick="toggleMediaDeleteCustomList()" style="display: none;"><span id="mediaDeleteCustomToggleText">Customize</span></button>
+          </div>
+
+          <!-- Dialog Actions: Cancel & Confirm Button Pair -->
+          <div class="lux-delete-dialog-actions">
+            <button type="button" class="lux-delete-cancel-btn" onclick="closeMediaDeleteChoiceModal()" data-i18n="crop_cancel">
+              Cancel
+            </button>
+            <button type="button" class="lux-delete-confirm-btn disabled" id="mediaDeleteConfirmBtn" onclick="confirmMediaDeleteChoice()" disabled>
+              <i class="fa-solid fa-hand-pointer"></i>
+              <span data-i18n="delete_btn_select_option">Select an Option</span>
+            </button>
           </div>
         </div>
       </div>
@@ -2454,7 +2835,7 @@
             <p style="margin-bottom: 8px;">You can wipe all app data and cache at any time via Android App Info &gt; Clear Storage or by uninstalling the app.</p>
           </div>
           <div class="dialog-buttons" style="margin-top: 10px; display: flex; gap: 10px;">
-            <a href="https://cremo-bit34.github.io/picshelf-0z0/privacy-policy.html" target="_blank" class="btn btn-outline" style="flex: 1; text-align: center; text-decoration: none; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <a href="https://picshelf-0z0.github.io/picshelf-001/privacy-policy.html" target="_blank" class="btn btn-outline" style="flex: 1; text-align: center; text-decoration: none; font-size: 12px; display: flex; align-items: center; justify-content: center; gap: 6px;">
               <i class="fa-solid fa-up-right-from-square"></i> Open Full Web Policy
             </a>
             <button class="btn btn-primary" onclick="closePrivacyPolicyModal()" style="flex: 1; font-size: 12px;">Close</button>
@@ -2628,7 +3009,7 @@
               <div class="surface-photo-picker-strip" id="surfacePhotoPickerStrip">
                 <!-- Rendered by JS: upload button + personal photos + 12 VIP studio textures -->
               </div>
-              <input type="file" id="albumSurfaceUploadInput" accept="image/*" style="display: none;" onchange="handleSurfaceImageUpload(event)" />
+              <input type="file" id="albumSurfaceUploadInput" accept="*/*" style="display: none;" onchange="handleSurfaceImageUpload(event)" />
             </div>
 
             <!-- Section 2: Choose 3D Surface Finish / Aesthetic Finish -->
@@ -3173,11 +3554,11 @@
                 <div class="move-copy-mode-selector fusion-mode-selector" style="margin-bottom: 8px;">
                   <button type="button" class="mode-segment-btn active" id="fusionModeCopyBtn" onclick="setFusionExistingMode('copy')">
                     <i class="fa-solid fa-copy"></i>
-                    <span data-i18n="organize_copy_photos">Copy Photos</span>
+                    <span>Copy Items</span>
                   </button>
                   <button type="button" class="mode-segment-btn" id="fusionModeMoveBtn" onclick="setFusionExistingMode('move')">
                     <i class="fa-solid fa-arrow-right-arrow-left"></i>
-                    <span data-i18n="organize_move_photos">Move Photos</span>
+                    <span>Move Items</span>
                   </button>
                 </div>
                 <div class="move-copy-mode-hint" id="fusionModeHint" data-i18n="fusion_mode_hint_copy" style="margin-bottom: 12px;">
@@ -3244,13 +3625,13 @@
                     <span class="source-badge-title" id="sourceBadgeName">Album Name</span>
                   </div>
                 </div>
-                <span class="source-badge-count-pill" id="sourceBadgeCount">0 Photos</span>
+                <span class="source-badge-count-pill" id="sourceBadgeCount">0 Items</span>
               </div>
 
               <!-- Selected Photos Preview Rail -->
               <div class="move-copy-preview-section" style="margin-top: 10px;">
                 <div class="move-copy-preview-header">
-                  <div class="move-copy-preview-summary" id="moveCopyPreviewSummary">3 photos selected</div>
+                  <div class="move-copy-preview-summary" id="moveCopyPreviewSummary">0 items selected</div>
                   <button type="button" class="move-copy-select-all-btn" id="moveCopySelectAllBtn" onclick="toggleMoveCopySelectAllPhotos()">
                     <i class="fa-solid fa-check-double"></i> <span>Deselect All</span>
                   </button>
@@ -3264,11 +3645,11 @@
               <div class="move-copy-mode-selector" style="margin-top: 10px;">
                 <button type="button" class="mode-segment-btn active" id="modeCopyBtn" onclick="setMoveCopyMode('copy')">
                   <i class="fa-solid fa-copy"></i>
-                  <span data-i18n="organize_copy_photos">Copy Photos</span>
+                  <span>Copy Items</span>
                 </button>
                 <button type="button" class="mode-segment-btn" id="modeMoveBtn" onclick="setMoveCopyMode('move')">
                   <i class="fa-solid fa-arrow-right-arrow-left"></i>
-                  <span data-i18n="organize_move_photos">Move Photos</span>
+                  <span>Move Items</span>
                 </button>
               </div>
               <div class="move-copy-mode-hint" id="moveCopyModeHint">
@@ -4248,9 +4629,9 @@
     </div>
   </main>
 
-  <script src="i18n.js"></script>
+  <script src="i18n.js?v=20261010_1915"></script>
   <script src="download_manager.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=20261010_1915"></script>
 </body>
 
 </html>

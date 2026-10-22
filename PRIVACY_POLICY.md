@@ -3,9 +3,9 @@
 **Effective Date:** October 5, 2026  
 **Application Name:** PicShelf (formerly Aura Photo Organizer)  
 **Package Name:** `com.aistudio.photoorganizer.xwylza`  
-**Developer:** cremo-bit34  
-**GitHub Repository:** [https://github.com/cremo-bit34/picshelf-0z0](https://github.com/cremo-bit34/picshelf-0z0)  
-**Hosted Privacy Policy:** [https://cremo-bit34.github.io/picshelf-0z0/privacy-policy.html](https://cremo-bit34.github.io/picshelf-0z0/privacy-policy.html)  
+**Developer:** picshelf-0z0  
+**GitHub Repository:** [https://github.com/picshelf-0z0/picshelf-001](https://github.com/picshelf-0z0/picshelf-001)  
+**Hosted Privacy Policy:** [https://picshelf-0z0.github.io/picshelf-001/privacy-policy.html](https://picshelf-0z0.github.io/picshelf-001/privacy-policy.html)  
 
 ---
 
@@ -78,5 +78,5 @@ We may update our Privacy Policy periodically. Any updates will be published dir
 ## 8. Contact Us
 
 If you have questions, feedback, or concerns regarding this Privacy Policy, please contact us:
-- **GitHub Issues:** [https://github.com/cremo-bit34/picshelf-0z0/issues](https://github.com/cremo-bit34/picshelf-0z0/issues)
-- **Repository:** [https://github.com/cremo-bit34/picshelf-0z0](https://github.com/cremo-bit34/picshelf-0z0)
+- **GitHub Issues:** [https://github.com/picshelf-0z0/picshelf-001/issues](https://github.com/picshelf-0z0/picshelf-001/issues)
+- **Repository:** [https://github.com/picshelf-0z0/picshelf-001](https://github.com/picshelf-0z0/picshelf-001)
