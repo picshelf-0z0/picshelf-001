@@ -1,0 +1,104 @@
+name: Build iOS App (.IPA) & Simulator Test
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    name: Build PicShelf for iPhone (.IPA + iOS Simulator Verification)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Verify Xcode Version
+        run: xcodebuild -version
+
+      - name: Sync Web Assets to iOS Bundle
+        run: |
+          mkdir -p ios/web
+          if [ -d "app/src/main/assets/web" ]; then
+            rsync -av --delete --exclude="*.apk" app/src/main/assets/web/ ios/web/
+          else
+            rsync -av --delete --exclude="*.apk" web/ ios/web/
+          fi
+          ls -la ios/web
+
+      - name: Build Xcode Archive (iOS Device arm64)
+        run: |
+          xcodebuild clean archive \
+            -project ios/AuraPhotoOrganizer.xcodeproj \
+            -scheme AuraPhotoOrganizer \
+            -configuration Release \
+            -archivePath build/AuraPhotoOrganizer.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package App into Sideloadable IPA
+        run: |
+          mkdir -p build/Payload
+          cp -r build/AuraPhotoOrganizer.xcarchive/Products/Applications/AuraPhotoOrganizer.app build/Payload/
+          cd build
+          zip -qr9 PicShelf.ipa Payload
+          cp PicShelf.ipa AuraPhotoOrganizer.ipa
+          ls -lh PicShelf.ipa AuraPhotoOrganizer.ipa
+
+      - name: Build & Verify on Apple iOS Simulator
+        run: |
+          xcodebuild build \
+            -project ios/AuraPhotoOrganizer.xcodeproj \
+            -scheme AuraPhotoOrganizer \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build/DerivedData \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+          SIM_APP=$(find build -name "AuraPhotoOrganizer.app" -path "*iphonesimulator*" | head -n 1)
+          echo "Simulator App Path: $SIM_APP"
+          DEVICE_UDID=$(xcrun simctl list devices available | grep -E "iPhone 15|iPhone 14" | head -n 1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
+          echo "Booting iOS Simulator UDID: $DEVICE_UDID"
+          xcrun simctl boot "$DEVICE_UDID" || true
+          xcrun simctl bootstatus "$DEVICE_UDID" -b
+          xcrun simctl install "$DEVICE_UDID" "$SIM_APP"
+          xcrun simctl launch "$DEVICE_UDID" com.aistudio.photoorganizer.xwylza
+          sleep 6
+          xcrun simctl io "$DEVICE_UDID" screenshot build/ios-simulator-screenshot.png
+          xcrun simctl shutdown "$DEVICE_UDID" || true
+          ls -lh build/ios-simulator-screenshot.png
+
+      - name: Upload IPA & Simulator Screenshot Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuraPhotoOrganizer-iOS-IPA
+          path: |
+            build/PicShelf.ipa
+            build/AuraPhotoOrganizer.ipa
+            build/ios-simulator-screenshot.png
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish Latest IPA Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-ipa
+          name: "PicShelf iOS (.IPA) & Simulator Verification"
+          body: "Automated Xcode macOS build of PicShelf (`PicShelf.ipa` / `AuraPhotoOrganizer.ipa`) and live iOS Simulator verification screenshot."
+          files: |
+            build/PicShelf.ipa
+            build/AuraPhotoOrganizer.ipa
+            build/ios-simulator-screenshot.png
+          prerelease: false

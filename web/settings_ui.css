@@ -1,0 +1,45 @@
+/* Text fitting and contrast only within Settings and its update dialog. */
+#settingsScreen .theme-option-card,
+#settingsScreen .theme-card-info,
+#settingsScreen .btn-dev-tool,
+#settingsScreen .language-option-card,
+#settingsScreen .lang-text-meta { min-width: 0; }
+#settingsScreen .theme-name,
+#settingsScreen .theme-sub,
+#settingsScreen .btn-dev-tool span,
+#settingsScreen .lang-native-name,
+#settingsScreen .lang-english-name,
+#settingsScreen .settings-action-btn span { overflow-wrap: anywhere; white-space: normal; }
+#settingsScreen .settings-row > .btn { min-width: 0; max-width: 38%; white-space: normal; flex-shrink: 0; }
+#settingsScreen .settings-row > .btn span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+#settingsScreen .badge-status-green { max-width: 32%; white-space: normal; text-align: center; }
+#settingsScreen .badge-status-green span { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+#settingsScreen .settings-row > .switch-toggle { flex-shrink: 0; }
+#settingsScreen .storage-labels { flex-wrap: wrap; gap: 4px 10px; }
+#settingsScreen .storage-used { overflow-wrap: anywhere; }
+#settingsScreen .profile-name-row { flex-wrap: wrap; }
+#settingsScreen .settings-footer-info { overflow-wrap: anywhere; }
+#appUpdateModal #updateLatestVersionBadge { white-space: normal; text-align: end; max-width: 55%; }
+#appUpdateModal .dialog-buttons > button { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+#appUpdateModal #updateReleaseNotesList { background: var(--bg-card); }
+body.light-mode #settingsScreen .settings-row-desc,
+body.light-mode #settingsScreen .profile-status-desc,
+body.light-mode #settingsScreen .settings-subgroup-desc,
+body.light-mode #settingsScreen .settings-subgroup-hint,
+body.light-mode #settingsScreen .lang-english-name,
+body.light-mode #settingsScreen .theme-sub,
+body.light-mode #settingsScreen .storage-media-breakdown,
+body.light-mode #settingsScreen .storage-legend,
+body.light-mode #settingsScreen .app-credits-text,
+body.light-mode #settingsScreen .app-version-text { color: #52617a; }
+body.light-mode #settingsScreen .settings-group-header,
+body.light-mode #settingsScreen .settings-subgroup-label { color: #52617a; }
+body.light-mode #settingsScreen #storageMediaBreakdown,
+body.light-mode #settingsScreen .settings-subgroup-desc { color: #52617a !important; }
+body.light-mode #settingsCheckUpdateBtn,
+body.light-mode #settingsScreen #openFeedbackBtn { color: #245ca3 !important; }
+body.light-mode #appUpdateModal .update-version-card { background: #f1f5f9 !important; border-color: #cbd5e1 !important; }
+body.light-mode #appUpdateModal #updateLatestVersionBadge { color: #075985 !important; }
+body.light-mode #appUpdateModal [data-i18n="update_data_safety_guarantee"] { color: #047857; }
+body.light-mode #appUpdateModal [data-i18n="update_installed_vs_latest"],
+body.light-mode #appUpdateModal [data-i18n="update_whats_new_title"] { color: #52617a !important; }

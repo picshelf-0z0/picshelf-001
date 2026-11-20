@@ -1,0 +1,46 @@
+/* The Backdrop Image rail only; other app scrolling and cards are untouched. */
+#studioBackdropSubImage,
+#studioBackdropSubImage .studio-backdrop-gallery-section { min-width: 0; max-width: 100%; }
+#studioBackdropGalleryList[data-backdrop-rail] {
+  display: block;
+  position: relative;
+  width: 100%; max-width: 100%; min-width: 0;
+  height: 60px; box-sizing: border-box;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 0; direction: ltr;
+  scrollbar-width: none;
+  contain: layout paint;
+}
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-track { position: relative; height: 60px; }
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-thumb {
+  position: absolute; top: 8px;
+  width: 44px; height: 44px; padding: 0; box-sizing: border-box;
+  font: inherit;
+}
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-thumb:focus-visible {
+  outline: 2px solid #38bdf8; outline-offset: 2px;
+}
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-thumb img { display: block; }
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-thumb[aria-busy="true"] { opacity: .65; }
+#studioBackdropGalleryList[data-backdrop-rail] .backdrop-gallery-failed { border-style: dashed; }
+#studioBackdropGalleryList + .backdrop-gallery-controls {
+  display: flex; flex-direction: column; gap: 3px;
+  width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box;
+}
+#studioBackdropGalleryList + .backdrop-gallery-controls .backdrop-gallery-scrubber {
+  width: 100%; min-width: 0; height: 24px; margin: 0;
+  padding: 0 2px; box-sizing: border-box; direction: ltr;
+  accent-color: #10b981; cursor: pointer;
+}
+#studioBackdropGalleryList + .backdrop-gallery-controls .backdrop-gallery-scrubber:disabled { opacity: .45; cursor: default; }
+#studioBackdropGalleryList + .backdrop-gallery-controls .backdrop-gallery-position {
+  display: block; min-height: 16px; font-size: 11px; line-height: 1.4;
+  color: #cbd5e1; overflow-wrap: anywhere;
+}
+body.light-mode #studioBackdropGalleryList + .backdrop-gallery-controls .backdrop-gallery-position { color: #475569; }
+body.light-mode #studioBackdropGalleryList + .backdrop-gallery-controls .backdrop-gallery-scrubber { accent-color: #059669; }
+body.light-mode #studioBackdropSubImage #studioBackdropClearBtn { color: #9f1239; }
+body.light-mode #studioBackdropSubImage #studioBackdropClearBtn:hover { background: #ffe4e6; }
+
+/* Reserve room for the full-range scroller only while Backdrop Image is open. */
+#detailEditStudioDrawer.open.backdrop-image-rail-open { max-height: 360px; }

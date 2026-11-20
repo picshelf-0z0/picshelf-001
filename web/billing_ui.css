@@ -1,0 +1,47 @@
+/* Confined to subscription cards and their translated billing copy. */
+#settingsPlanCardThreeMonthly, #modalPlanCardThreeMonthly,
+#vipImportPlanCardThreeMonthly, #rzpPlanCardThreeMonthly { grid-column: 1 / -1; }
+#settingsPlanGrid .settings-plan-card, #modalSettingsPlanGrid .settings-plan-card,
+#vipImportSettingsPlanGrid .settings-plan-card, #rzpPlanSelector .rzp-plan-card { min-width: 0; }
+#settingsPlanGrid .settings-plan-badge, #modalSettingsPlanGrid .settings-plan-badge,
+#vipImportSettingsPlanGrid .settings-plan-badge, #rzpPlanSelector .rzp-plan-badge {
+  white-space: normal; overflow-wrap: anywhere; max-width: 100%;
+}
+#proMembershipCard .pro-card-header, #modalProMembershipCard .pro-card-header,
+#vipImportProMembershipCard .pro-card-header { flex-wrap: wrap; gap: 8px; }
+#proMembershipCard .pro-pricing-tag, #modalProMembershipCard .pro-pricing-tag,
+#vipImportProMembershipCard .pro-pricing-tag { white-space: normal; overflow-wrap: anywhere; }
+#proMembershipCard .btn-pro-razorpay, #modalProMembershipCard .btn-pro-razorpay,
+#vipImportProMembershipCard .btn-pro-razorpay, #razorpayModal .dialog-buttons button {
+  white-space: normal; height: auto; min-height: 44px; overflow-wrap: anywhere;
+}
+.billing-copy, .billing-status { font-size: 12px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; margin: 10px 0 0; }
+.billing-status { color: var(--text-main, #f1f5f9); font-weight: 600; }
+body.light-mode .billing-status { color: #1e293b; }
+#razorpayModal .rzp-plan-header { flex-wrap: wrap; gap: 6px; }
+#razorpayModal .rzp-plan-tenure { white-space: normal; }
+#settingsPlanGrid .settings-plan-card, #modalSettingsPlanGrid .settings-plan-card,
+#vipImportSettingsPlanGrid .settings-plan-card, #rzpPlanSelector .rzp-plan-card {
+  overflow-wrap: anywhere;
+}
+#settingsPlanGrid .settings-plan-price-wrap, #modalSettingsPlanGrid .settings-plan-price-wrap,
+#vipImportSettingsPlanGrid .settings-plan-price-wrap, #razorpayModal .rzp-plan-cost {
+  flex-wrap: wrap;
+}
+#razorpayModal .rzp-plan-name, #razorpayModal .rzp-plan-tenure { min-width: 0; }
+body.light-mode #razorpayModal .rzp-plan-price { color: #047857; }
+.billing-account-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.billing-account-actions button { flex: 1 1 120px; white-space: normal; overflow-wrap: anywhere; min-height: 44px; height: auto; font-size: 12px; }
+body.light-mode .billing-copy,
+body.light-mode #razorpayModal .rzp-subtitle,
+body.light-mode #razorpayModal .rzp-plan-subtext,
+body.light-mode #razorpayModal .rzp-plan-tenure,
+body.light-mode #razorpayModal .rzp-security-note,
+body.light-mode #razorpayModal .rzp-mode,
+body.light-mode #proMembershipCard .settings-plan-unit,
+body.light-mode #proMembershipCard .settings-plan-subtext,
+body.light-mode #modalProMembershipCard .settings-plan-unit,
+body.light-mode #modalProMembershipCard .settings-plan-subtext,
+body.light-mode #vipImportProMembershipCard .settings-plan-unit,
+body.light-mode #vipImportProMembershipCard .settings-plan-subtext { color: #475569; }
+body.light-mode #razorpayModal .rzp-amount-badge { color: #047857; }

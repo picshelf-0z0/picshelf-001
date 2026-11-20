@@ -1,0 +1,58 @@
+/* Editable time fields and keyboard layout are scoped exclusively to Trim. */
+.detail-container.trim-active #detailEditStudioDrawer.open { max-height: 420px; }
+#studioPanelTrim .trim-time-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid #64748b;
+  border-radius: 7px;
+  background: #101827;
+  color: #f1f5f9;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: start;
+}
+#studioPanelTrim .trim-time-input:focus {
+  outline: 2px solid #ff5278;
+  outline-offset: -2px;
+  border-color: #ff5278;
+}
+#studioPanelTrim .trim-time-input[aria-invalid="true"] { border-color: #fb7185; }
+#studioPanelTrim .trim-time-hint,
+#studioPanelTrim .trim-time-error {
+  margin: -4px 0 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  color: #cbd5e1;
+}
+#studioPanelTrim .trim-time-error { color: #fda4af; }
+#studioPanelTrim .trim-time-error[hidden] { display: none; }
+body.light-mode #studioPanelTrim .trim-time-input { background: #fff; color: #0f172a; border-color: #94a3b8; }
+body.light-mode #studioPanelTrim .trim-time-input:focus { border-color: #e11d48; outline-color: #e11d48; }
+body.light-mode #studioPanelTrim .trim-time-input[aria-invalid="true"] { border-color: #be123c; }
+body.light-mode #studioPanelTrim .trim-time-hint { color: #475569; }
+body.light-mode #studioPanelTrim .trim-time-error { color: #be123c; }
+html.trim-time-editing #photoDetailModal {
+  top: 0 !important;
+  bottom: auto !important;
+  height: min(100%, var(--keyboard-form-height, 100vh)) !important;
+  max-height: min(100%, var(--keyboard-form-height, 100vh)) !important;
+}
+html.trim-time-editing .detail-container.trim-active { min-height: 0; }
+html.trim-time-editing .detail-container.trim-active #detailEditStudioDrawer.open {
+  flex-shrink: 1;
+  min-height: 120px;
+  max-height: min(360px, calc(var(--keyboard-form-height, 100vh) - 90px));
+  overflow-y: auto;
+  scroll-padding-block: 8px;
+}
+html.trim-time-editing .detail-container.trim-active .detail-image-wrapper {
+  min-height: 0 !important;
+  flex-shrink: 1;
+}

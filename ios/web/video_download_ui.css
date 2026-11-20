@@ -1,0 +1,98 @@
+/* Individual video progress only: no backdrop, page locking, or player styles. */
+.video-download-ui {
+  --video-download-bg: #151c2b;
+  --video-download-fg: #f8fafc;
+  --video-download-muted: #b8c4d5;
+  --video-download-line: #3c475b;
+  --video-download-track: #303c50;
+  --video-download-accent: #65dbc0;
+  position: fixed;
+  z-index: 18000;
+  top: calc(env(safe-area-inset-top, 0px) + 72px);
+  right: calc(env(safe-area-inset-right, 0px) + 12px);
+  width: min(320px, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 24px));
+  max-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 140px);
+  color: var(--video-download-fg);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.video-download-ui *, .video-download-ui *::before, .video-download-ui *::after { box-sizing: border-box; }
+.video-download-ui__content { max-height: inherit; }
+.video-download-ui__announcement { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.video-download-ui__panel, .video-download-ui__chip {
+  pointer-events: auto;
+  background: var(--video-download-bg);
+  border: 1px solid var(--video-download-line);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px #0005;
+  color: var(--video-download-fg);
+}
+.video-download-ui__panel {
+  padding:12px; min-height:0;
+  max-height:calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 140px);
+  overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain;
+  scrollbar-width:auto; scrollbar-gutter:stable;
+  scrollbar-color:var(--video-download-muted) var(--video-download-track);
+}
+.video-download-ui .video-download-ui__panel::-webkit-scrollbar { width:8px; }
+.video-download-ui .video-download-ui__panel::-webkit-scrollbar-track { background:var(--video-download-track); border-radius:8px; }
+.video-download-ui .video-download-ui__panel::-webkit-scrollbar-thumb { background:var(--video-download-muted); border-radius:8px; border:2px solid var(--video-download-track); }
+.video-download-ui .video-download-ui__panel::-webkit-scrollbar-thumb:hover { background:var(--video-download-accent); }
+@supports (height:100dvh) {
+  .video-download-ui, .video-download-ui__panel { max-height:calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 140px); }
+}
+.video-download-ui__header, .video-download-ui__state { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.video-download-ui__title { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.video-download-ui__name { margin: 4px 0 10px; color: var(--video-download-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-download-ui__state { align-items: flex-start; }
+.video-download-ui__status { min-width: 0; overflow-wrap: anywhere; font-weight: 650; }
+.video-download-ui__state[data-status="completed"] { color: var(--video-download-accent); }
+.video-download-ui__percent { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.video-download-ui__progress { display: block; width: 100%; height: 5px; margin: 9px 0 10px; border: 0; border-radius: 9px; overflow: hidden; accent-color: var(--video-download-accent); }
+.video-download-ui__progress::-webkit-progress-bar { background: var(--video-download-track); border-radius: 9px; }
+.video-download-ui__progress::-webkit-progress-value { background: var(--video-download-accent); border-radius: 9px; }
+.video-download-ui__progress::-moz-progress-bar { background: var(--video-download-accent); border-radius: 9px; }
+.video-download-ui__location { display: flex; flex-direction: column; gap: 3px; padding-top: 8px; }
+.video-download-ui__path-label, .video-download-ui__hint { color: var(--video-download-muted); overflow-wrap: anywhere; }
+.video-download-ui__path { font-size: 11px; overflow-wrap: anywhere; }
+.video-download-ui__hint { margin: 9px 0 0; font-size: 11px; overflow-wrap: anywhere; }
+.video-download-ui__actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.video-download-ui button { font-family: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.video-download-ui__icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0; border: 1px solid var(--video-download-line); border-radius: 10px; background: transparent; color: var(--video-download-fg); font-size: 20px; line-height: 1; }
+.video-download-ui__button { min-height: 34px; max-width: 100%; padding: 6px 11px; border: 1px solid var(--video-download-line); border-radius: 10px; background: transparent; color: var(--video-download-fg); font-size: 11px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+.video-download-ui button:focus-visible { outline: 2px solid var(--video-download-accent); outline-offset: 2px; }
+.video-download-ui button:disabled { cursor: default; opacity: .65; }
+.video-download-ui__jobs { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--video-download-line); }
+.video-download-ui__job { max-width: 100%; padding: 4px 7px; border: 1px solid var(--video-download-line); border-radius: 7px; background: transparent; color: var(--video-download-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.video-download-ui__job[aria-pressed="true"] { color: var(--video-download-fg); border-color: var(--video-download-accent); }
+.video-download-ui.is-minimized { width: 44px; max-width: 44px; top: var(--video-badge-top,8px); left: var(--video-badge-left,calc(100vw - 52px)); right: auto; }
+.video-download-ui__chip { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; width: 44px; height: 44px; padding: 3px; overflow: hidden; font-size: 10px; text-align: center; touch-action: none; user-select: none; }
+.video-download-ui__chip-glyph { font-size: 19px; line-height: 20px; }
+.video-download-ui__chip-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.video-download-ui__progress.is-compact { position: absolute; left: 0; bottom: 0; height: 3px; margin: 0; }
+body.light-mode .video-download-ui { --video-download-bg: #ffffff; --video-download-fg: #182336; --video-download-muted: #46566d; --video-download-line: #c5cfdb; --video-download-track: #e2e8f0; --video-download-accent: #087c65; }
+@media (max-height: 440px) {
+  .video-download-ui { top:calc(env(safe-area-inset-top, 0px) + 52px); }
+  .video-download-ui, .video-download-ui__panel { max-height:calc(100vh - 100px); }
+  @supports (height:100dvh) { .video-download-ui, .video-download-ui__panel { max-height:calc(100dvh - 100px); } }
+}
+@media (max-height: 440px) { .video-download-ui.is-minimized { top: var(--video-badge-top,8px); } }
+.video-download-ui__counts { display:flex; flex-wrap:wrap; gap:4px 10px; margin-bottom:8px; color:var(--video-download-muted); font-variant-numeric:tabular-nums; }
+.video-download-ui__jobs { display:flex; flex-direction:column; }
+.video-download-ui__job-row,.video-download-ui__file { display:flex; align-items:center; gap:6px; min-width:0; }
+.video-download-ui__job { flex:1; min-width:0; text-align:start; padding:7px; white-space:normal; }
+.video-download-ui__job-name,.video-download-ui__job-status,.video-download-ui__job-state { display:block; overflow-wrap:anywhere; }
+.video-download-ui__job-name { font-weight:650; }
+.video-download-ui__job-state { font-size:10px; opacity:.85; }
+.video-download-ui__job-row>.video-download-ui__button,.video-download-ui__file>.video-download-ui__button { flex-shrink:0; max-width:40%; }
+.video-download-ui__files { display:flex; flex-direction:column; gap:7px; margin-top:8px; }
+.video-download-ui__file-copy { flex:1; min-width:0; }
+.video-download-ui__file-name { display:block; overflow-wrap:anywhere; font-size:11px; }
+.video-download-ui__file-status { display:block; color:var(--video-download-muted); font-size:10px; }
+.video-download-ui__pager { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-top:8px; font-size:10px; }
+.video-download-ui__actions { flex-wrap:wrap; gap:6px; }
+.video-download-ui__header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.video-download-ui__ok { min-width:48px; background:var(--video-download-accent); border-color:var(--video-download-accent); color:var(--video-download-bg); font-weight:650; }

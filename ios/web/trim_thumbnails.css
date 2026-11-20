@@ -1,0 +1,40 @@
+/* Only the decorative filmstrip; existing trim controls retain their layout. */
+#trimTimelineStrip > .trim-thumbnail-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  pointer-events: none;
+  background: #0f172a;
+}
+#trimTimelineStrip > .trim-thumbnail-layer > img {
+  display: block;
+  width: 12.5%;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  border: 0;
+}
+#trimTimelineStrip > .trim-thumbnail-layer > img.ready { opacity: 1; }
+#trimTimelineStrip > .trim-timeline-shade.left { left: 0; }
+#trimTimelineStrip > .trim-timeline-shade.right { right: 0; }
+#trimTimelineStrip .trim-thumbnail-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  color: #f1f5f9;
+  background: rgba(15, 23, 42, .8);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+#trimTimelineStrip .trim-thumbnail-status[hidden] { display: none; }
+body.light-mode #trimTimelineStrip .trim-thumbnail-status {
+  color: #0f172a;
+  background: rgba(241, 245, 249, .94);
+}

@@ -1,0 +1,112 @@
+/* Text fit and contrast only, confined to the three download dialogs. */
+#downloadProgressModal .download-progress-stats-row,
+#downloadProgressModal .download-pills-wrap,
+#downloadProgressModal .download-progress-actions,
+#downloadHistoryModal .download-history-row,
+#downloadHistoryModal .download-history-sub { flex-wrap: wrap; gap: 6px; }
+#downloadProgressModal .download-progress-actions button,
+#downloadDuplicateModal .btn { white-space: normal; overflow-wrap: anywhere; height: auto; }
+#downloadProgressModal .download-progress-actions button { max-width: 100%; }
+#downloadProgressModal .download-progress-status-msg,
+#downloadHistoryModal .download-history-sub > span,
+#downloadDuplicateModal .dup-stat-pill { overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+body.light-mode #downloadProgressModal #downloadProgressTitle,
+body.light-mode #downloadProgressModal .download-count-label { color: #0f172a !important; }
+body.light-mode #downloadProgressModal .download-progress-status-msg,
+body.light-mode #downloadHistoryModal .dialog-desc,
+body.light-mode #downloadHistoryModal .download-history-date,
+body.light-mode #downloadHistoryModal .download-history-sub,
+body.light-mode #downloadHistoryModal .download-history-dest,
+body.light-mode #downloadHistoryModal .download-history-empty { color: #475569 !important; }
+body.light-mode #downloadDuplicateModal .dup-stat-pill.total { color: #475569; }
+body.light-mode #downloadDuplicateModal .dup-stat-pill.dups { color: #92400e; }
+body.light-mode #downloadDuplicateModal .dup-stat-pill.new,
+body.light-mode #downloadProgressModal .download-pill.success,
+body.light-mode #downloadHistoryModal [data-download-status="completed"] { color: #047857 !important; }
+body.light-mode #downloadProgressModal .download-pill.failed,
+body.light-mode #downloadHistoryModal [data-download-status="failed"] { color: #b91c1c !important; }
+body.light-mode #downloadHistoryModal [data-download-status="partial"],
+body.light-mode #downloadHistoryModal [data-download-status="cancelled"],
+body.light-mode #downloadHistoryModal [data-download-status="downloading"],
+body.light-mode #downloadHistoryModal [data-download-status="pending"] { color: #92400e !important; }
+body.light-mode #downloadHistoryModal .download-history-batch { color: #0369a1; }
+
+/* Active bulk downloads stay available without covering or locking the app. */
+#downloadProgressModal.download-progress-widget {
+  --download-widget-base-bottom: calc(env(safe-area-inset-bottom, 0px) + 94px);
+  position: fixed !important;
+  inset: auto calc(env(safe-area-inset-right, 0px) + 12px) max(var(--download-widget-base-bottom), var(--download-widget-toast-bottom, 0px)) auto !important;
+  width: min(340px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 170px), calc(100dvh - max(var(--download-widget-base-bottom), var(--download-widget-toast-bottom, 0px)) - env(safe-area-inset-top, 0px) - 12px));
+  padding: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
+  color: #f8fafc;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+#downloadProgressModal.download-progress-widget > .dialog-card {
+  width: 100%;
+  max-width: 100% !important;
+  max-height: inherit;
+  margin: 0;
+  padding: 12px !important;
+  text-align: start !important;
+  border-radius: 16px;
+  background: #151c2b;
+  border-color: #3c475b;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 8px 30px #0005;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  animation: none;
+}
+#downloadProgressModal.download-progress-widget .download-progress-icon-wrap { display: none; }
+#downloadProgressModal.download-progress-widget #downloadProgressTitle { margin: 8px 0 10px !important; font-size: 15px !important; }
+#downloadProgressModal.download-progress-widget .download-location-card { margin: 8px 0 12px; padding: 9px; }
+#downloadProgressModal.download-progress-widget .download-location-header { font-size: 10px; }
+#downloadProgressModal.download-progress-widget .download-location-path { font-size: 11px; }
+#downloadProgressModal.download-progress-widget .download-progress-actions { margin-top: 12px !important; }
+#downloadProgressModal.download-progress-widget .download-progress-actions button { min-width: 0 !important; padding: 8px 12px !important; font-size: 12px; }
+#downloadProgressModal.download-progress-widget .download-progress-actions button:disabled { opacity: .6; cursor: default; }
+#downloadProgressModal .download-progress-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: start;
+  cursor: pointer;
+}
+#downloadProgressModal .download-progress-toggle:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+#downloadProgressToggleText { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#downloadProgressCompactCount { display: none; font-variant-numeric: tabular-nums; }
+#downloadProgressBackgroundHint { margin: 10px 0 0; color: #b8c4d5; font-size: 11px; line-height: 1.4; }
+#downloadProgressModal.download-progress-widget.is-minimized { width: min(300px, calc(100vw - 24px)); }
+#downloadProgressModal.download-progress-widget.is-minimized > .dialog-card { padding: 5px 7px 0 !important; overflow: hidden; }
+#downloadProgressModal.download-progress-widget.is-minimized > .dialog-card > :not(.download-progress-toggle):not(.download-progress-track) { display: none !important; }
+#downloadProgressModal.is-minimized .download-progress-toggle { min-height: 42px; }
+#downloadProgressModal.is-minimized #downloadProgressCompactCount { display: inline; max-width: 45%; overflow-wrap: anywhere; }
+#downloadProgressModal.is-minimized .download-progress-track { height: 3px; margin: 3px -7px 0; width: calc(100% + 14px); border: 0; }
+body.light-mode #downloadProgressModal.download-progress-widget { color: #182336; }
+body.light-mode #downloadProgressModal.download-progress-widget > .dialog-card { background: #fff; border-color: #c5cfdb; }
+body.light-mode #downloadProgressModal #downloadProgressBackgroundHint { color: #46566d; }
+@media (max-height: 440px) {
+  #downloadProgressModal.download-progress-widget { --download-widget-base-bottom: calc(env(safe-area-inset-bottom, 0px) + 66px); max-height: min(calc(100dvh - 104px), calc(100dvh - max(var(--download-widget-base-bottom), var(--download-widget-toast-bottom, 0px)) - env(safe-area-inset-top, 0px) - 12px)); }
+}
