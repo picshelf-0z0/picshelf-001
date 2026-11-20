@@ -8,14 +8,16 @@ import CoreLocation
 import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
+import PDFKit
 
-class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate, CLLocationManagerDelegate {
+class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate, UIDocumentPickerDelegate, CLLocationManagerDelegate {
 
     weak var viewController: UIViewController?
     weak var webView: WKWebView?
 
     private var targetAlbumForImport: String?
     private var isGpsMetadataEnabled: Bool = true
+    private let importQueue = DispatchQueue(label: "com.picshelf.ios.importQueue", qos: .userInitiated)
 
     // Sensors
     private let motionManager = CMMotionManager()
@@ -61,7 +63,6 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
             let magnitude = sqrt(userAccel.x * userAccel.x + userAccel.y * userAccel.y + userAccel.z * userAccel.z)
             if magnitude > 1.6 && now - self.lastNativeShakeTime > 0.8 {
                 self.lastNativeShakeTime = now
-                // Trigger Taptic Engine
                 let generator = UIImpactFeedbackGenerator(style: .medium)
                 generator.prepare()
                 generator.impactOccurred()
@@ -91,11 +92,18 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
 
         case "openGallery":
             targetAlbumForImport = nil
-            openGallery()
+            presentUploadSourceChooser()
 
         case "openGalleryForAlbum":
             targetAlbumForImport = body["album"] as? String
-            openGallery()
+            presentUploadSourceChooser()
+
+        case "retainArchiveSources":
+            if let idsJson = body["ids"] as? String,
+               let data = idsJson.data(using: .utf8),
+               let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                PicShelfMediaStore.shared.retainSources(Set(arr))
+            }
 
         case "authenticateBiometrics":
             let mode = body["mode"] as? String ?? "unlock"
@@ -153,7 +161,43 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         }
     }
 
-    // MARK: - Camera
+    // MARK: - Upload Source Action Sheet (Photo Library, Choose Files [TAR/ZIP/All], Camera)
+
+    private func presentUploadSourceChooser() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let vc = self.viewController else { return }
+
+            let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+
+            sheet.addAction(UIAlertAction(title: "Photo Library (Photos & Videos)", style: .default) { [weak self] _ in
+                self?.openPhotoLibraryPicker()
+            })
+
+            sheet.addAction(UIAlertAction(title: "Choose Files (TAR, ZIP, Videos, Photos, PDF)", style: .default) { [weak self] _ in
+                self?.openDocumentFilesPicker()
+            })
+
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                sheet.addAction(UIAlertAction(title: "Take Photo or Video", style: .default) { [weak self] _ in
+                    self?.openCamera()
+                })
+            }
+
+            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+                self?.targetAlbumForImport = nil
+            })
+
+            if let popover = sheet.popoverPresentationController {
+                popover.sourceView = vc.view
+                popover.sourceRect = CGRect(x: vc.view.bounds.midX, y: vc.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+
+            vc.present(sheet, animated: true)
+        }
+    }
+
+    // MARK: - Camera (Photos & Videos)
 
     private func openCamera() {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
@@ -167,11 +211,13 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 if granted {
                     let picker = UIImagePickerController()
                     picker.sourceType = .camera
+                    picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
+                    picker.videoQuality = .typeHigh
                     picker.delegate = self
                     picker.allowsEditing = false
                     self.viewController?.present(picker, animated: true)
                 } else {
-                    self.showAlert(title: "Camera Access Required", message: "Please enable Camera access in iOS Settings > Aura Photos to capture photos.")
+                    self.showAlert(title: "Camera Access Required", message: "Please enable Camera access in iOS Settings > PicShelf to capture photos and videos.")
                 }
             }
         }
@@ -180,31 +226,59 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
         picker.dismiss(animated: true)
 
+        // Captured Video
+        if let mediaURL = info[.mediaURL] as? URL {
+            let capturedAlbum = targetAlbumForImport
+            targetAlbumForImport = nil
+            importQueue.async { [weak self] in
+                guard let self = self else { return }
+                let ext = mediaURL.pathExtension.isEmpty ? "mov" : mediaURL.pathExtension.lowercased()
+                let baseName = "Camera_Video_\(Int(Date().timeIntervalSince1970)).\(ext)"
+                if let item = self.ingestVideoFile(from: mediaURL, displayName: baseName) {
+                    self.emitImportBatch([item], targetAlbum: capturedAlbum)
+                    self.emitImportFinished(totalCount: 1, targetAlbum: capturedAlbum)
+                }
+            }
+            return
+        }
+
+        // Captured Photo
         guard let image = info[.originalImage] as? UIImage else { return }
+        let capturedAlbum = targetAlbumForImport
+        targetAlbumForImport = nil
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        importQueue.async { [weak self] in
             guard let self = self else { return }
-            let base64 = self.imageToBase64(image: image, maxDimension: 1600)
-            var locJson = "null"
-
+            let oriented = self.normalizeOrientation(image)
+            guard let jpegData = oriented.jpegData(compressionQuality: 0.90),
+                  let stored = PicShelfMediaStore.shared.storeData(jpegData, ext: "jpg") else {
+                return
+            }
+            let baseName = "Camera_Shot_\(Int(Date().timeIntervalSince1970)).jpg"
+            var locDict: [String: Any]? = nil
             if self.isGpsMetadataEnabled, let loc = self.lastKnownLocation {
                 let lat = loc.coordinate.latitude
                 let lon = loc.coordinate.longitude
-                let displayCoords = String(
-                    format: "%.4f° %@, %.4f° %@",
-                    abs(lat), lat >= 0 ? "N" : "S",
-                    abs(lon), lon >= 0 ? "E" : "W"
-                )
-                locJson = "{\"latitude\": \(lat), \"longitude\": \(lon), \"displayCoords\": \"\(displayCoords)\", \"place\": \"\", \"city\": \"\", \"country\": \"\"}"
+                let displayCoords = String(format: "%.4f° %@, %.4f° %@", abs(lat), lat >= 0 ? "N" : "S", abs(lon), lon >= 0 ? "E" : "W")
+                locDict = ["latitude": lat, "longitude": lon, "displayCoords": displayCoords, "place": "", "city": "", "country": ""]
             }
-
-            DispatchQueue.main.async {
-                if let base64 = base64 {
-                    let escaped = base64.replacingOccurrences(of: "'", with: "\\'")
-                    let js = "if (window.onNativePhotoCaptured) { window.onNativePhotoCaptured('\(escaped)', 'Camera Shot', \(locJson)); }"
-                    self.webView?.evaluateJavaScript(js, completionHandler: nil)
-                }
-            }
+            self.registerKnownSourceId(stored.sourceId)
+            var item: [String: Any] = [
+                "displayName": "Camera Shot",
+                "mediaType": "image",
+                "fileSize": stored.size,
+                "createdAt": Date().timeIntervalSince1970 * 1000.0,
+                "tarEntry": [
+                    "nativeSourceId": stored.sourceId,
+                    "offset": 0,
+                    "size": stored.size,
+                    "baseName": baseName
+                ]
+            ]
+            if let loc = locDict { item["location"] = loc }
+            self.emitImportBatch([item], targetAlbum: capturedAlbum)
+            self.emitImportFinished(totalCount: 1, targetAlbum: capturedAlbum)
+            PicShelfMediaStore.shared.unmarkImporting(stored.sourceId)
         }
     }
 
@@ -212,12 +286,13 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         picker.dismiss(animated: true)
     }
 
-    // MARK: - Modern Photo Gallery (PHPicker with Multi-Select)
+    // MARK: - Modern Native Photo Library Picker (Unlimited Multi-Select Photos + HEIC + Live Photos + Videos)
 
-    private func openGallery() {
+    private func openPhotoLibraryPicker() {
         var config = PHPickerConfiguration(photoLibrary: .shared())
-        config.selectionLimit = 0 // 0 = unlimited selection!
-        config.filter = .images
+        config.selectionLimit = 0 // Unlimited multi-selection!
+        config.filter = nil // All Photos, Live Photos, HEIC, PNG, JPEG, AND Videos!
+        config.preferredAssetRepresentationMode = .current // Avoids WebKit/iOS transcode dropouts
 
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
@@ -226,106 +301,744 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
 
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
+        let capturedAlbum = targetAlbumForImport
+        targetAlbumForImport = nil
         guard !results.isEmpty else { return }
 
-        let dispatchGroup = DispatchGroup()
-        var importedPhotos: [[String: Any]] = []
-        let lock = NSLock()
+        let totalSelected = results.count
+        showWebToast("Importing \(totalSelected) item\(totalSelected > 1 ? "s" : "")...", durationMs: 2500)
 
-        for result in results {
-            let provider = result.itemProvider
-            if provider.canLoadObject(ofClass: UIImage.self) {
-                dispatchGroup.enter()
+        importQueue.async { [weak self] in
+            guard let self = self else { return }
+            var totalImported = 0
+            var pendingBatch: [[String: Any]] = []
+            var storedIdsToUnmark: [String] = []
+            let batchThreshold = 12
 
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { [weak self] data, error in
-                    defer { dispatchGroup.leave() }
-                    guard let self = self, let data = data, let image = UIImage(data: data) else { return }
+            for (idx, result) in results.enumerated() {
+                if totalSelected > 2 && idx % 3 == 0 {
+                    self.showWebToast("Importing \(idx + 1) / \(totalSelected)...", durationMs: 1800)
+                }
 
-                    var metadataDict: [String: Any]? = nil
-                    var dateTakenMs: Double? = nil
-                    var cameraModel: String? = nil
+                let item: [String: Any]? = autoreleasepool {
+                    return self.loadSinglePickerResult(result, index: idx)
+                }
 
-                    if let source = CGImageSourceCreateWithData(data as CFData, nil) {
-                        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
-                            // EXIF
-                            if let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] {
-                                if let dateStr = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
-                                    let formatter = DateFormatter()
-                                    formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-                                    if let date = formatter.date(from: dateStr) {
-                                        dateTakenMs = date.timeIntervalSince1970 * 1000
-                                    }
-                                }
-                            }
-                            // TIFF (Camera make/model)
-                            if let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
-                                let make = tiff[kCGImagePropertyTIFFMake] as? String ?? ""
-                                let model = tiff[kCGImagePropertyTIFFModel] as? String ?? ""
-                                if !model.isEmpty {
-                                    cameraModel = (!make.isEmpty && !model.lowercased().hasPrefix(make.lowercased())) ? "\(make) \(model)" : model
-                                }
-                            }
-                            // GPS
-                            if self.isGpsMetadataEnabled, let gps = props[kCGImagePropertyGPSDictionary] as? [CFString: Any] {
-                                if let latVal = gps[kCGImagePropertyGPSLatitude] as? Double,
-                                   let latRef = gps[kCGImagePropertyGPSLatitudeRef] as? String,
-                                   let lonVal = gps[kCGImagePropertyGPSLongitude] as? Double,
-                                   let lonRef = gps[kCGImagePropertyGPSLongitudeRef] as? String {
-                                    let lat = (latRef.uppercased() == "S") ? -latVal : latVal
-                                    let lon = (lonRef.uppercased() == "W") ? -lonVal : lonVal
-                                    let displayCoords = String(
-                                        format: "%.4f° %@, %.4f° %@",
-                                        abs(lat), lat >= 0 ? "N" : "S",
-                                        abs(lon), lon >= 0 ? "E" : "W"
-                                    )
-                                    metadataDict = [
-                                        "latitude": lat,
-                                        "longitude": lon,
-                                        "displayCoords": displayCoords,
-                                        "place": "",
-                                        "city": "",
-                                        "country": ""
-                                    ]
+                if let validItem = item {
+                    if let tar = validItem["tarEntry"] as? [String: Any], let sid = tar["nativeSourceId"] as? String {
+                        storedIdsToUnmark.append(sid)
+                    }
+                    pendingBatch.append(validItem)
+                    totalImported += 1
+                    if pendingBatch.count >= batchThreshold || totalImported == 1 {
+                        self.emitImportBatch(pendingBatch, targetAlbum: capturedAlbum)
+                        pendingBatch.removeAll(keepingCapacity: true)
+                    }
+                }
+            }
+
+            if !pendingBatch.isEmpty {
+                self.emitImportBatch(pendingBatch, targetAlbum: capturedAlbum)
+                pendingBatch.removeAll()
+            }
+
+            if totalImported > 0 {
+                self.emitImportFinished(totalCount: totalImported, targetAlbum: capturedAlbum)
+            } else {
+                self.showWebToast("Could not load selected media. If stored in iCloud, ensure internet is available.", durationMs: 4500)
+            }
+
+            for sid in storedIdsToUnmark {
+                PicShelfMediaStore.shared.unmarkImporting(sid)
+            }
+        }
+    }
+
+    private func loadSinglePickerResult(_ result: PHPickerResult, index: Int) -> [String: Any]? {
+        let provider = result.itemProvider
+        let rawName = provider.suggestedName ?? "Moment_\(Int(Date().timeIntervalSince1970 * 1000))_\(index)"
+
+        // 1. Check Video FIRST (movie conforms to UTType.movie; Live Photos do NOT conform to UTType.movie)
+        if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+            let sem = DispatchSemaphore(value: 0)
+            var importedItem: [String: Any]? = nil
+
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { [weak self] url, error in
+                defer { sem.signal() }
+                guard let self = self, let url = url, error == nil else { return }
+                let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension.lowercased()
+                let fileName = rawName.lowercased().hasSuffix(".\(ext)") ? rawName : "\(rawName).\(ext)"
+                importedItem = self.ingestVideoFile(from: url, displayName: fileName)
+            }
+            _ = sem.wait(timeout: .now() + 180)
+            if let item = importedItem { return item }
+        }
+
+        // 2. Image (HEIC, HEIF, JPEG, PNG, GIF, WebP, RAW, Live Photo)
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            // Attempt A: Streaming disk-to-disk loadFileRepresentation (preserves full EXIF/GPS, zero RAM bloat)
+            let sem = DispatchSemaphore(value: 0)
+            var importedItem: [String: Any]? = nil
+
+            provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { [weak self] url, error in
+                defer { sem.signal() }
+                guard let self = self, let url = url, error == nil else { return }
+                let ext = url.pathExtension.isEmpty ? "jpg" : url.pathExtension.lowercased()
+                let fileName = rawName.lowercased().hasSuffix(".\(ext)") ? rawName : "\(rawName).\(ext)"
+                importedItem = self.ingestImageFile(from: url, displayName: fileName)
+            }
+            _ = sem.wait(timeout: .now() + 90)
+            if let item = importedItem { return item }
+
+            // Attempt B: Fallback via loadDataRepresentation (handles some iCloud / virtual asset providers)
+            let sem2 = DispatchSemaphore(value: 0)
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { [weak self] data, _ in
+                defer { sem2.signal() }
+                guard let self = self, let data = data, !data.isEmpty else { return }
+                let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("ps_fb_\(UUID().uuidString).img")
+                do {
+                    try data.write(to: tmpURL)
+                    defer { try? FileManager.default.removeItem(at: tmpURL) }
+                    importedItem = self.ingestImageFile(from: tmpURL, displayName: "\(rawName).jpg")
+                } catch {}
+            }
+            _ = sem2.wait(timeout: .now() + 90)
+            if let item = importedItem { return item }
+        }
+
+        // Attempt C: Final fallback via UIImage object loader
+        if provider.canLoadObject(ofClass: UIImage.self) {
+            let sem3 = DispatchSemaphore(value: 0)
+            var importedItem: [String: Any]? = nil
+            provider.loadObject(ofClass: UIImage.self) { [weak self] obj, _ in
+                defer { sem3.signal() }
+                guard let self = self, let uiImg = obj as? UIImage else { return }
+                let oriented = self.normalizeOrientation(uiImg)
+                guard let jpeg = oriented.jpegData(compressionQuality: 0.90),
+                      let stored = PicShelfMediaStore.shared.storeData(jpeg, ext: "jpg") else { return }
+                self.registerKnownSourceId(stored.sourceId)
+                let cleanDisplay = (rawName as NSString).deletingPathExtension
+                importedItem = [
+                    "displayName": cleanDisplay.isEmpty ? rawName : cleanDisplay,
+                    "mediaType": "image",
+                    "fileSize": stored.size,
+                    "createdAt": Date().timeIntervalSince1970 * 1000.0,
+                    "tarEntry": [
+                        "nativeSourceId": stored.sourceId,
+                        "offset": 0,
+                        "size": stored.size,
+                        "baseName": "\(cleanDisplay.isEmpty ? rawName : cleanDisplay).jpg"
+                    ]
+                ]
+            }
+            _ = sem3.wait(timeout: .now() + 60)
+            if let item = importedItem { return item }
+        }
+
+        return nil
+    }
+
+    // MARK: - Native Files Picker (TAR, ZIP, TAR.GZ, TGZ, PDF, Videos, Audio, Photos — Unlimited Multi-Select)
+
+    private func openDocumentFilesPicker() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        viewController?.present(picker, animated: true)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        targetAlbumForImport = nil
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        let capturedAlbum = targetAlbumForImport
+        targetAlbumForImport = nil
+        guard !urls.isEmpty else { return }
+
+        showWebToast("Opening \(urls.count) file\(urls.count > 1 ? "s" : "")...", durationMs: 2200)
+
+        importQueue.async { [weak self] in
+            guard let self = self else { return }
+            var totalImported = 0
+            var pendingBatch: [[String: Any]] = []
+            var storedIdsToUnmark: [String] = []
+
+            let flushBatch = {
+                if !pendingBatch.isEmpty {
+                    self.emitImportBatch(pendingBatch, targetAlbum: capturedAlbum)
+                    pendingBatch.removeAll(keepingCapacity: true)
+                }
+            }
+
+            for fileURL in urls {
+                let accessed = fileURL.startAccessingSecurityScopedResource()
+                defer { if accessed { fileURL.stopAccessingSecurityScopedResource() } }
+
+                let fileName = fileURL.lastPathComponent
+                let lower = fileName.lowercased()
+
+                // 1. Plain TAR archive
+                if lower.hasSuffix(".tar") {
+                    self.showWebToast("Opening archive '\(fileName)'...", durationMs: 2500)
+                    if let stored = PicShelfMediaStore.shared.storeFileByCopying(from: fileURL, ext: "tar") {
+                        self.registerKnownSourceId(stored.sourceId)
+                        storedIdsToUnmark.append(stored.sourceId)
+                        let count = self.indexTarArchive(fileURL: stored.fileURL, sourceId: stored.sourceId, targetAlbum: capturedAlbum)
+                        totalImported += count
+                    }
+                    continue
+                }
+
+                // 2. GZIP / TAR.GZ / TGZ archive
+                if lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz") || lower.hasSuffix(".gz") {
+                    self.showWebToast("Decompressing '\(fileName)'...", durationMs: 3000)
+                    let isTarGz = lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tgz")
+                    let outExt = isTarGz ? "tar" : ((String(lower.dropLast(3)) as NSString).pathExtension)
+                    let sourceId = "\(UUID().uuidString.lowercased()).\(PicShelfMediaStore.shared.sanitizeExtension(outExt.isEmpty ? "tar" : outExt))"
+                    let dstURL = PicShelfMediaStore.shared.sourcesDir.appendingPathComponent(sourceId)
+                    PicShelfMediaStore.shared.markImporting(sourceId)
+                    if let written = PicShelfMediaStore.shared.decompressGzipFile(from: fileURL, to: dstURL), written > 0 {
+                        self.registerKnownSourceId(sourceId)
+                        storedIdsToUnmark.append(sourceId)
+                        let tarCount = self.indexTarArchive(fileURL: dstURL, sourceId: sourceId, targetAlbum: capturedAlbum)
+                        if tarCount > 0 {
+                            totalImported += tarCount
+                        } else if !isTarGz, let item = self.ingestStandaloneDocument(from: dstURL, fileName: String(fileName.dropLast(3))) {
+                            pendingBatch.append(item)
+                            totalImported += 1
+                            flushBatch()
+                        } else {
+                            try? FileManager.default.removeItem(at: dstURL)
+                        }
+                    } else {
+                        try? FileManager.default.removeItem(at: dstURL)
+                        PicShelfMediaStore.shared.unmarkImporting(sourceId)
+                    }
+                    continue
+                }
+
+                // 3. ZIP / CBZ archive
+                if lower.hasSuffix(".zip") || lower.hasSuffix(".cbz") {
+                    self.showWebToast("Opening archive '\(fileName)'...", durationMs: 2500)
+                    if let stored = PicShelfMediaStore.shared.storeFileByCopying(from: fileURL, ext: "zip") {
+                        self.registerKnownSourceId(stored.sourceId)
+                        storedIdsToUnmark.append(stored.sourceId)
+                        let count = self.indexZipArchive(fileURL: stored.fileURL, sourceId: stored.sourceId, targetAlbum: capturedAlbum)
+                        totalImported += count
+                    }
+                    continue
+                }
+
+                // 4. Individual media files (Image, HEIC, PDF, Video, Audio)
+                if let item = autoreleasepool(invoking: { self.ingestStandaloneDocument(from: fileURL, fileName: fileName) }) {
+                    if let tar = item["tarEntry"] as? [String: Any], let sid = tar["nativeSourceId"] as? String {
+                        storedIdsToUnmark.append(sid)
+                    }
+                    pendingBatch.append(item)
+                    totalImported += 1
+                    if pendingBatch.count >= 20 || totalImported == 1 {
+                        flushBatch()
+                    }
+                }
+            }
+
+            flushBatch()
+
+            if totalImported > 0 {
+                self.emitImportFinished(totalCount: totalImported, targetAlbum: capturedAlbum)
+            } else {
+                self.showWebToast("No supported media files found in the selected item(s).", durationMs: 4000)
+            }
+
+            for sid in storedIdsToUnmark {
+                PicShelfMediaStore.shared.unmarkImporting(sid)
+            }
+        }
+    }
+
+    // MARK: - File Ingestion Helpers (Images, HEIC, PDF, Videos, Audio)
+
+    private func ingestStandaloneDocument(from fileURL: URL, fileName: String) -> [String: Any]? {
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        if ext == "pdf" {
+            return ingestPDFFile(from: fileURL, displayName: fileName)
+        }
+        guard let category = PicShelfMediaStore.mediaCategory(for: fileName) else { return nil }
+        switch category {
+        case "video":
+            return ingestVideoFile(from: fileURL, displayName: fileName)
+        case "audio":
+            return ingestAudioFile(from: fileURL, displayName: fileName)
+        default:
+            return ingestImageFile(from: fileURL, displayName: fileName)
+        }
+    }
+
+    private func ingestImageFile(from srcURL: URL, displayName: String) -> [String: Any]? {
+        var metaLocation: [String: Any]? = nil
+        var metaCreatedAt: Double? = nil
+        var metaCamera: String? = nil
+
+        if let src = CGImageSourceCreateWithURL(srcURL as CFURL, nil) {
+            let meta = PicShelfMediaStore.extractImageMetadata(from: src, includeGps: isGpsMetadataEnabled)
+            metaLocation = meta.location
+            metaCreatedAt = meta.createdAt
+            metaCamera = meta.cameraModel
+        }
+
+        let srcExt = srcURL.pathExtension.lowercased()
+        let webSafeExts: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "bmp"]
+        let isWebSafe = webSafeExts.contains(srcExt)
+
+        let storedResult: (sourceId: String, fileURL: URL, size: Int64)?
+        let finalBaseName: String
+        let cleanTitle = (displayName as NSString).deletingPathExtension
+        let safeTitle = cleanTitle.isEmpty ? displayName : cleanTitle
+
+        if isWebSafe {
+            storedResult = PicShelfMediaStore.shared.storeFileByCopying(from: srcURL, ext: srcExt)
+            finalBaseName = "\(safeTitle).\(srcExt)"
+        } else {
+            // Convert HEIC / HEIF / RAW / DNG / TIFF to oriented JPEG on disk so WKWebView <img> & <canvas> always render & edit cleanly
+            var convertedData: Data? = nil
+            if let img = UIImage(contentsOfFile: srcURL.path) {
+                let oriented = normalizeOrientation(img)
+                convertedData = oriented.jpegData(compressionQuality: 0.90)
+            } else if let src = CGImageSourceCreateWithURL(srcURL as CFURL, nil),
+                      let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                convertedData = UIImage(cgImage: cgImg).jpegData(compressionQuality: 0.90)
+            }
+            guard let jpeg = convertedData else { return nil }
+            storedResult = PicShelfMediaStore.shared.storeData(jpeg, ext: "jpg")
+            finalBaseName = "\(safeTitle).jpg"
+        }
+
+        guard let stored = storedResult else { return nil }
+        registerKnownSourceId(stored.sourceId)
+
+        let modMs = ((try? FileManager.default.attributesOfItem(atPath: srcURL.path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? Date().timeIntervalSince1970) * 1000.0
+
+        var item: [String: Any] = [
+            "displayName": safeTitle,
+            "mediaType": "image",
+            "fileSize": stored.size,
+            "createdAt": metaCreatedAt ?? modMs,
+            "tarEntry": [
+                "nativeSourceId": stored.sourceId,
+                "offset": 0,
+                "size": stored.size,
+                "baseName": finalBaseName
+            ]
+        ]
+        if let loc = metaLocation { item["location"] = loc }
+        if let cam = metaCamera { item["cameraModel"] = cam }
+        return item
+    }
+
+    private func ingestPDFFile(from srcURL: URL, displayName: String) -> [String: Any]? {
+        let cleanTitle = (displayName as NSString).deletingPathExtension
+        let safeTitle = cleanTitle.isEmpty ? displayName : cleanTitle
+        guard let jpeg = PicShelfMediaStore.renderPDFPage1JPEG(from: srcURL, maxWidth: 1400),
+              let stored = PicShelfMediaStore.shared.storeData(jpeg, ext: "jpg") else {
+            return nil
+        }
+        registerKnownSourceId(stored.sourceId)
+        return [
+            "displayName": safeTitle,
+            "mediaType": "image",
+            "fileSize": stored.size,
+            "createdAt": Date().timeIntervalSince1970 * 1000.0,
+            "tarEntry": [
+                "nativeSourceId": stored.sourceId,
+                "offset": 0,
+                "size": stored.size,
+                "baseName": "\(safeTitle).jpg"
+            ]
+        ]
+    }
+
+    private func ingestVideoFile(from srcURL: URL, displayName: String) -> [String: Any]? {
+        let ext = srcURL.pathExtension.isEmpty ? "mov" : srcURL.pathExtension.lowercased()
+        guard let stored = PicShelfMediaStore.shared.storeFileByCopying(from: srcURL, ext: ext) else {
+            return nil
+        }
+        registerKnownSourceId(stored.sourceId)
+
+        let vmeta = PicShelfMediaStore.extractVideoMetadata(from: stored.fileURL, includeGps: isGpsMetadataEnabled)
+        var item: [String: Any] = [
+            "displayName": displayName,
+            "mediaType": "video",
+            "fileSize": stored.size,
+            "duration": vmeta.duration > 0 ? round(vmeta.duration) : 6,
+            "createdAt": vmeta.createdAt ?? (Date().timeIntervalSince1970 * 1000.0),
+            "tarEntry": [
+                "nativeSourceId": stored.sourceId,
+                "offset": 0,
+                "size": stored.size,
+                "baseName": displayName
+            ]
+        ]
+        if let loc = vmeta.location { item["location"] = loc }
+        if let cam = vmeta.cameraModel { item["cameraModel"] = cam }
+        return item
+    }
+
+    private func ingestAudioFile(from srcURL: URL, displayName: String) -> [String: Any]? {
+        let ext = srcURL.pathExtension.isEmpty ? "mp3" : srcURL.pathExtension.lowercased()
+        guard let stored = PicShelfMediaStore.shared.storeFileByCopying(from: srcURL, ext: ext) else {
+            return nil
+        }
+        registerKnownSourceId(stored.sourceId)
+
+        let asset = AVURLAsset(url: stored.fileURL)
+        let durSec = CMTimeGetSeconds(asset.duration)
+        let duration = (durSec.isFinite && durSec > 0) ? round(durSec) : 0
+
+        return [
+            "displayName": displayName,
+            "mediaType": "audio",
+            "fileSize": stored.size,
+            "duration": duration,
+            "createdAt": Date().timeIntervalSince1970 * 1000.0,
+            "tarEntry": [
+                "nativeSourceId": stored.sourceId,
+                "offset": 0,
+                "size": stored.size,
+                "baseName": displayName
+            ]
+        ]
+    }
+
+    // MARK: - Streaming On-Disk TAR Archive Indexer (Zero-RAM, USTAR + PAX + GNU LongName)
+
+    private func indexTarArchive(fileURL: URL, sourceId: String, targetAlbum: String?) -> Int {
+        guard let fh = try? FileHandle(forReadingFrom: fileURL),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.uint64Value else {
+            return 0
+        }
+        defer { try? fh.close() }
+
+        var offset: UInt64 = 0
+        var paxPath: String? = nil
+        var paxSize: UInt64? = nil
+        var gnuLongName: String? = nil
+        var totalIndexed = 0
+        var batch: [[String: Any]] = []
+        let nowMs = Date().timeIntervalSince1970 * 1000.0
+
+        while offset + 512 <= fileSize {
+            do {
+                try fh.seek(toOffset: offset)
+                guard let header = try fh.read(upToCount: 512), header.count == 512 else { break }
+
+                // Check all-zero end-of-archive block
+                if header.allSatisfy({ $0 == 0 }) { break }
+
+                let typeFlag = header[156]
+                let rawSize = parseTarOctal(header, start: 124, length: 12)
+                let entrySize = paxSize ?? rawSize
+                let dataOffset = offset + 512
+
+                // GNU LongName ('L')
+                if typeFlag == 0x4c { // 'L'
+                    if entrySize > 0 && entrySize < 65536, let nameData = try fh.read(upToCount: Int(entrySize)) {
+                        gnuLongName = String(data: nameData, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\0\r\n"))
+                    }
+                    offset = dataOffset + ((entrySize + 511) / 512) * 512
+                    continue
+                }
+
+                // PAX Extended Header ('x' or 'g')
+                if typeFlag == 0x78 || typeFlag == 0x67 {
+                    if entrySize > 0 && entrySize < 1_048_576, let paxData = try fh.read(upToCount: Int(entrySize)),
+                       let paxText = String(data: paxData, encoding: .utf8) {
+                        for line in paxText.split(separator: "\n") {
+                            if let sp = line.firstIndex(of: " ") {
+                                let kv = String(line[line.index(after: sp)...])
+                                if kv.hasPrefix("path=") {
+                                    paxPath = String(kv.dropFirst(5))
+                                } else if kv.hasPrefix("size="), let s = UInt64(kv.dropFirst(5)) {
+                                    paxSize = s
                                 }
                             }
                         }
                     }
+                    offset = dataOffset + ((entrySize + 511) / 512) * 512
+                    continue
+                }
 
-                    if let base64 = self.imageToBase64(image: image, maxDimension: 1600) {
-                        var photoObj: [String: Any] = [
-                            "displayName": provider.suggestedName ?? "Moment_\(Int(Date().timeIntervalSince1970 * 1000))",
-                            "dataUrl": base64
+                // Regular file ('0' or '\0')
+                let isRegularFile = (typeFlag == 0x30 || typeFlag == 0x00)
+                let nameStr = parseTarString(header, start: 0, length: 100)
+                let prefixStr = parseTarString(header, start: 345, length: 155)
+                let combinedPath = paxPath ?? gnuLongName ?? (prefixStr.isEmpty ? nameStr : "\(prefixStr)/\(nameStr)")
+                paxPath = nil
+                paxSize = nil
+                gnuLongName = nil
+
+                if isRegularFile && entrySize > 0 && dataOffset + entrySize <= fileSize {
+                    let baseName = (combinedPath as NSString).lastPathComponent
+                    let isJunk = combinedPath.contains("__MACOSX/") || baseName.hasPrefix("._") || baseName.hasPrefix(".")
+                    if !isJunk, let mediaType = PicShelfMediaStore.mediaCategory(for: baseName) {
+                        let cleanDisplay = (mediaType == "image") ? ((baseName as NSString).deletingPathExtension.isEmpty ? baseName : (baseName as NSString).deletingPathExtension) : baseName
+                        batch.append([
+                            "displayName": cleanDisplay,
+                            "mediaType": mediaType,
+                            "fileSize": entrySize,
+                            "createdAt": nowMs + Double(totalIndexed),
+                            "tarEntry": [
+                                "nativeSourceId": sourceId,
+                                "offset": dataOffset,
+                                "size": entrySize,
+                                "baseName": baseName
+                            ]
+                        ])
+                        totalIndexed += 1
+                        if batch.count >= (totalIndexed <= 60 ? 60 : 250) {
+                            emitImportBatch(batch, targetAlbum: targetAlbum)
+                            batch.removeAll(keepingCapacity: true)
+                            if totalIndexed % 500 == 0 {
+                                showWebToast("Importing archive: \(totalIndexed) items...", durationMs: 1200)
+                            }
+                        }
+                    }
+                }
+
+                offset = dataOffset + ((entrySize + 511) / 512) * 512
+            } catch {
+                break
+            }
+        }
+
+        if !batch.isEmpty {
+            emitImportBatch(batch, targetAlbum: targetAlbum)
+        }
+        return totalIndexed
+    }
+
+    private func parseTarString(_ data: Data, start: Int, length: Int) -> String {
+        let slice = data.subdata(in: start..<(start + length))
+        let trimmed = slice.prefix { $0 != 0 }
+        return String(data: trimmed, encoding: .utf8) ?? ""
+    }
+
+    private func parseTarOctal(_ data: Data, start: Int, length: Int) -> UInt64 {
+        // GNU base-256 binary size support (high bit set)
+        if (data[start] & 0x80) != 0 {
+            var val: UInt64 = 0
+            for i in (start + 1)..<(start + length) {
+                val = (val << 8) | UInt64(data[i])
+            }
+            return val
+        }
+        let s = parseTarString(data, start: start, length: length).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        return UInt64(s, radix: 8) ?? 0
+    }
+
+    // MARK: - Streaming On-Disk ZIP Archive Indexer (Standard ZIP + ZIP64, Stored + Deflate)
+
+    private func indexZipArchive(fileURL: URL, sourceId: String, targetAlbum: String?) -> Int {
+        guard let fh = try? FileHandle(forReadingFrom: fileURL),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.uint64Value,
+              fileSize >= 22 else {
+            return 0
+        }
+        defer { try? fh.close() }
+
+        func readU16(_ d: Data, _ o: Int) -> UInt16 {
+            return UInt16(d[o]) | (UInt16(d[o + 1]) << 8)
+        }
+        func readU32(_ d: Data, _ o: Int) -> UInt32 {
+            return UInt32(d[o]) | (UInt32(d[o + 1]) << 8) | (UInt32(d[o + 2]) << 16) | (UInt32(d[o + 3]) << 24)
+        }
+        func readU64(_ d: Data, _ o: Int) -> UInt64 {
+            let lo = UInt64(readU32(d, o))
+            let hi = UInt64(readU32(d, o + 4))
+            return lo | (hi << 32)
+        }
+
+        // Locate EOCD (PK\x05\x06) within last 65557 bytes
+        let tailLen = min(fileSize, 65557)
+        let tailStart = fileSize - tailLen
+        guard (try? fh.seek(toOffset: tailStart)) != nil,
+              let tail = try? fh.read(upToCount: Int(tailLen)),
+              tail.count >= 22 else { return 0 }
+
+        var eocdPos: Int? = nil
+        for i in stride(from: tail.count - 22, through: 0, by: -1) {
+            if tail[i] == 0x50 && tail[i + 1] == 0x4b && tail[i + 2] == 0x05 && tail[i + 3] == 0x06 {
+                eocdPos = i
+                break
+            }
+        }
+        guard let eocdIdx = eocdPos else { return 0 }
+
+        var cdSize = UInt64(readU32(tail, eocdIdx + 12))
+        var cdOffset = UInt64(readU32(tail, eocdIdx + 16))
+
+        // Check ZIP64 EOCD Locator (20 bytes immediately before EOCD)
+        if (cdOffset == 0xFFFFFFFF || cdSize == 0xFFFFFFFF) && eocdIdx >= 20 {
+            let locIdx = eocdIdx - 20
+            if readU32(tail, locIdx) == 0x07064b50 {
+                let z64EocdOffset = readU64(tail, locIdx + 8)
+                if (try? fh.seek(toOffset: z64EocdOffset)) != nil,
+                   let z64 = try? fh.read(upToCount: 56), z64.count == 56,
+                   readU32(z64, 0) == 0x06064b50 {
+                    cdSize = readU64(z64, 40)
+                    cdOffset = readU64(z64, 48)
+                }
+            }
+        }
+
+        guard cdOffset + cdSize <= fileSize, cdSize > 0 else { return 0 }
+
+        // Read Central Directory (bounded safely; stream in chunks if huge)
+        guard (try? fh.seek(toOffset: cdOffset)) != nil,
+              let cdData = try? fh.read(upToCount: Int(min(cdSize, 128 * 1024 * 1024))) else {
+            return 0
+        }
+
+        var pos = 0
+        var totalIndexed = 0
+        var batch: [[String: Any]] = []
+        let nowMs = Date().timeIntervalSince1970 * 1000.0
+
+        while pos + 46 <= cdData.count {
+            guard readU32(cdData, pos) == 0x02014b50 else { break }
+            let method = Int(readU16(cdData, pos + 10))
+            var compSize = UInt64(readU32(cdData, pos + 20))
+            var uncompSize = UInt64(readU32(cdData, pos + 24))
+            let fnLen = Int(readU16(cdData, pos + 28))
+            let extraLen = Int(readU16(cdData, pos + 30))
+            let commentLen = Int(readU16(cdData, pos + 32))
+            var localOffset = UInt64(readU32(cdData, pos + 42))
+
+            let entryEnd = pos + 46 + fnLen + extraLen + commentLen
+            guard entryEnd <= cdData.count else { break }
+
+            let fnData = cdData.subdata(in: (pos + 46)..<(pos + 46 + fnLen))
+            let fn = String(data: fnData, encoding: .utf8) ?? String(data: fnData, encoding: .isoLatin1) ?? ""
+
+            // Parse ZIP64 extra field if needed
+            if compSize == 0xFFFFFFFF || uncompSize == 0xFFFFFFFF || localOffset == 0xFFFFFFFF {
+                var ePos = pos + 46 + fnLen
+                let eEnd = ePos + extraLen
+                while ePos + 4 <= eEnd {
+                    let headerId = readU16(cdData, ePos)
+                    let dataSize = Int(readU16(cdData, ePos + 2))
+                    if headerId == 0x0001 && ePos + 4 + dataSize <= eEnd {
+                        var zPos = ePos + 4
+                        if uncompSize == 0xFFFFFFFF && zPos + 8 <= ePos + 4 + dataSize {
+                            uncompSize = readU64(cdData, zPos); zPos += 8
+                        }
+                        if compSize == 0xFFFFFFFF && zPos + 8 <= ePos + 4 + dataSize {
+                            compSize = readU64(cdData, zPos); zPos += 8
+                        }
+                        if localOffset == 0xFFFFFFFF && zPos + 8 <= ePos + 4 + dataSize {
+                            localOffset = readU64(cdData, zPos); zPos += 8
+                        }
+                        break
+                    }
+                    ePos += 4 + dataSize
+                }
+            }
+
+            pos = entryEnd
+
+            if !fn.hasSuffix("/") && compSize > 0 && (method == 0 || method == 8) {
+                let baseName = (fn as NSString).lastPathComponent
+                let isJunk = fn.contains("__MACOSX/") || baseName.hasPrefix("._") || baseName.hasPrefix(".")
+                if !isJunk, let mediaType = PicShelfMediaStore.mediaCategory(for: baseName) {
+                    let cleanDisplay = (mediaType == "image") ? ((baseName as NSString).deletingPathExtension.isEmpty ? baseName : (baseName as NSString).deletingPathExtension) : baseName
+                    batch.append([
+                        "displayName": cleanDisplay,
+                        "mediaType": mediaType,
+                        "fileSize": uncompSize > 0 ? uncompSize : compSize,
+                        "createdAt": nowMs + Double(totalIndexed),
+                        "zipEntry": [
+                            "nativeSourceId": sourceId,
+                            "localOffset": localOffset,
+                            "compSize": compSize,
+                            "uncompSize": uncompSize > 0 ? uncompSize : compSize,
+                            "method": method,
+                            "baseName": baseName,
+                            "fn": fn
                         ]
-                        if let meta = metadataDict { photoObj["location"] = meta }
-                        if let model = cameraModel { photoObj["cameraModel"] = model }
-                        if let d = dateTakenMs { photoObj["createdAt"] = d }
-
-                        lock.lock()
-                        importedPhotos.append(photoObj)
-                        lock.unlock()
+                    ])
+                    totalIndexed += 1
+                    if batch.count >= (totalIndexed <= 60 ? 60 : 250) {
+                        emitImportBatch(batch, targetAlbum: targetAlbum)
+                        batch.removeAll(keepingCapacity: true)
                     }
                 }
             }
         }
 
-        dispatchGroup.notify(queue: .main) { [weak self] in
-            guard let self = self, !importedPhotos.isEmpty else { return }
-            do {
-                let jsonData = try JSONSerialization.data(withJSONObject: importedPhotos, options: [])
-                if let jsonString = String(data: jsonData, encoding: .utf8) {
-                    if let targetAlbum = self.targetAlbumForImport, !targetAlbum.isEmpty {
-                        self.targetAlbumForImport = nil
-                        let escapedAlbum = targetAlbum.replacingOccurrences(of: "\"", with: "\\\"")
-                        let js = "if (window.onNativePhotosImportedToAlbum) { window.onNativePhotosImportedToAlbum(\(jsonString), \"\(escapedAlbum)\"); } else if (window.onNativePhotosImported) { window.onNativePhotosImported(\(jsonString)); }"
-                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
-                    } else {
-                        let js = "if (window.onNativePhotosImported) { window.onNativePhotosImported(\(jsonString)); }"
-                        self.webView?.evaluateJavaScript(js, completionHandler: nil)
-                    }
-                }
-            } catch {
-                print("Error serializing imported photos: \(error)")
+        if !batch.isEmpty {
+            emitImportBatch(batch, targetAlbum: targetAlbum)
+        }
+        return totalIndexed
+    }
+
+    // MARK: - JS Bridge Dispatchers
+
+    private func registerKnownSourceId(_ sourceId: String) {
+        let escaped = sourceId.replacingOccurrences(of: "'", with: "\\'")
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript("if (window.__iosKnownSourceIds) window.__iosKnownSourceIds.add('\(escaped)');", completionHandler: nil)
+        }
+    }
+
+    private func showWebToast(_ message: String, durationMs: Int = 2500) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [message], options: []),
+              let arrJson = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript("if (typeof window.showToast === 'function') window.showToast((\(arrJson))[0], \(durationMs));", completionHandler: nil)
+        }
+    }
+
+    private func emitImportBatch(_ batch: [[String: Any]], targetAlbum: String?) {
+        guard !batch.isEmpty,
+              let jsonData = try? JSONSerialization.data(withJSONObject: batch, options: []),
+              let jsonStr = String(data: jsonData, encoding: .utf8) else { return }
+
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let webView = self.webView else {
+                sem.signal()
+                return
             }
+            let js: String
+            if let album = targetAlbum, !album.isEmpty,
+               let albumData = try? JSONSerialization.data(withJSONObject: [album], options: []),
+               let albumArr = String(data: albumData, encoding: .utf8) {
+                js = "if (window.onNativePhotosImportedToAlbum) { window.onNativePhotosImportedToAlbum(\(jsonStr), (\(albumArr))[0], { isStreamingBatch: true, deferSave: true, deferRender: true, originalsPrepared: true }); } else if (window.onNativePhotosImported) { window.onNativePhotosImported(\(jsonStr), { isStreamingBatch: true, deferSave: true, deferRender: false, originalsPrepared: true }); }"
+            } else {
+                js = "if (window.onNativePhotosImported) { window.onNativePhotosImported(\(jsonStr), { isStreamingBatch: true, deferSave: true, deferRender: false, originalsPrepared: true }); }"
+            }
+            webView.evaluateJavaScript(js) { _, _ in
+                sem.signal()
+            }
+        }
+        _ = sem.wait(timeout: .now() + 15)
+    }
+
+    private func emitImportFinished(totalCount: Int, targetAlbum: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let webView = self.webView else { return }
+            let albumLiteral: String
+            if let album = targetAlbum, !album.isEmpty,
+               let albumData = try? JSONSerialization.data(withJSONObject: [album], options: []),
+               let albumArr = String(data: albumData, encoding: .utf8) {
+                albumLiteral = "(\(albumArr))[0]"
+            } else {
+                albumLiteral = "null"
+            }
+            let js = "if (typeof window._onIOSNativeImportFinished === 'function') { window._onIOSNativeImportFinished(\(totalCount), \(albumLiteral)); }"
+            webView.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 
@@ -361,12 +1074,10 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 dispatchResult(success, evalError?.localizedDescription)
             }
         } else if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) {
-            // Fallback to iPhone Device Passcode
             context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, evalError in
                 dispatchResult(success, evalError?.localizedDescription)
             }
         } else {
-            // No biometric or passcode configured
             dispatchResult(false, "no_device_lock")
         }
     }
@@ -438,22 +1149,22 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     }
 
     // MARK: - Production-Grade Download Batch Manager (Section 14: iOS PhotoKit)
-    
+
     private func findOrCreateAlbum(named albumName: String, completion: @escaping (PHAssetCollection?) -> Void) {
         let fetchOptions = PHFetchOptions()
         fetchOptions.predicate = NSPredicate(format: "title = %@", albumName)
         let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: fetchOptions)
-        
+
         if let existing = collections.firstObject {
             completion(existing)
             return
         }
-        
+
         var placeholder: PHObjectPlaceholder?
         PHPhotoLibrary.shared().performChanges({
             let createAlbumRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumName)
             placeholder = createAlbumRequest.placeholderForCreatedAssetCollection
-        }) { success, error in
+        }) { success, _ in
             if success, let placeholder = placeholder {
                 let fetchResult = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [placeholder.localIdentifier], options: nil)
                 completion(fetchResult.firstObject)
@@ -466,10 +1177,10 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     private func executeDownloadBatch(body: [String: Any]) {
         guard let sessionId = body["sessionId"] as? String,
               let items = body["items"] as? [[String: Any]] else { return }
-        
+
         let sourceType = body["sourceType"] as? String ?? "gallery"
         let generalAlbumName = body["albumName"] as? String
-        
+
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
             guard let self = self else { return }
             guard status == .authorized || status == .limited else {
@@ -479,12 +1190,12 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 }
                 return
             }
-            
+
             DispatchQueue.global(qos: .userInitiated).async {
                 var successCount = 0
                 var failedCount = 0
                 let total = items.count
-                
+
                 var index = 0
                 func processNext() {
                     if index >= total {
@@ -497,14 +1208,14 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                         }
                         return
                     }
-                    
+
                     let item = items[index]
                     let assetId = item["assetId"] as? String ?? "asset_\(index)"
                     let dataUrl = item["dataUrl"] as? String ?? ""
                     let itemAlbumName = (item["albumName"] as? String) ?? generalAlbumName
                     let curIdx = index + 1
                     index += 1
-                    
+
                     guard let image = self.base64ToImage(dataUrl: dataUrl) else {
                         failedCount += 1
                         DispatchQueue.main.async {
@@ -513,56 +1224,32 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                         processNext()
                         return
                     }
-                    
-                    if (sourceType == "album" || sourceType == "multi_album"), let targetAlbum = itemAlbumName, !targetAlbum.isEmpty {
-                        self.findOrCreateAlbum(named: targetAlbum) { collection in
-                            PHPhotoLibrary.shared().performChanges({
-                                let createAssetRequest = PHAssetChangeRequest.creationRequestForAsset(from: image)
-                                if let collection = collection,
-                                   let placeholder = createAssetRequest.placeholderForCreatedAsset,
-                                   let albumChangeRequest = PHAssetCollectionChangeRequest(for: collection) {
-                                    albumChangeRequest.addAssets([placeholder] as NSArray)
-                                }
-                            }) { success, error in
-                                if success {
-                                    successCount += 1
-                                } else {
-                                    failedCount += 1
-                                }
-                                let errMsg = error?.localizedDescription.replacingOccurrences(of: "'", with: "\\'")
-                                let errArg = errMsg != nil ? "'\(errMsg!)'" : "null"
-                                DispatchQueue.main.async {
-                                    self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', \(success), \(errArg), \(curIdx), \(total));", completionHandler: nil)
-                                }
-                                processNext()
+
+                    let targetCollectionName = ((sourceType == "album" || sourceType == "multi_album") && !(itemAlbumName ?? "").isEmpty) ? itemAlbumName! : "PicShelf"
+                    self.findOrCreateAlbum(named: targetCollectionName) { collection in
+                        PHPhotoLibrary.shared().performChanges({
+                            let createAssetRequest = PHAssetChangeRequest.creationRequestForAsset(from: image)
+                            if let collection = collection,
+                               let placeholder = createAssetRequest.placeholderForCreatedAsset,
+                               let albumChangeRequest = PHAssetCollectionChangeRequest(for: collection) {
+                                albumChangeRequest.addAssets([placeholder] as NSArray)
                             }
-                        }
-                    } else {
-                        self.findOrCreateAlbum(named: "PicShelf") { collection in
-                            PHPhotoLibrary.shared().performChanges({
-                                let createAssetRequest = PHAssetChangeRequest.creationRequestForAsset(from: image)
-                                if let collection = collection,
-                                   let placeholder = createAssetRequest.placeholderForCreatedAsset,
-                                   let albumChangeRequest = PHAssetCollectionChangeRequest(for: collection) {
-                                    albumChangeRequest.addAssets([placeholder] as NSArray)
-                                }
-                            }) { success, error in
-                                if success {
-                                    successCount += 1
-                                } else {
-                                    failedCount += 1
-                                }
-                                let errMsg = error?.localizedDescription.replacingOccurrences(of: "'", with: "\\'")
-                                let errArg = errMsg != nil ? "'\(errMsg!)'" : "null"
-                                DispatchQueue.main.async {
-                                    self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', \(success), \(errArg), \(curIdx), \(total));", completionHandler: nil)
-                                }
-                                processNext()
+                        }) { success, error in
+                            if success {
+                                successCount += 1
+                            } else {
+                                failedCount += 1
                             }
+                            let errMsg = error?.localizedDescription.replacingOccurrences(of: "'", with: "\\'")
+                            let errArg = errMsg != nil ? "'\(errMsg!)'" : "null"
+                            DispatchQueue.main.async {
+                                self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', \(success), \(errArg), \(curIdx), \(total));", completionHandler: nil)
+                            }
+                            processNext()
                         }
                     }
                 }
-                
+
                 processNext()
             }
         }
@@ -672,22 +1359,14 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         viewController?.present(alert, animated: true)
     }
 
-    private func imageToBase64(image: UIImage, maxDimension: CGFloat) -> String? {
-        var targetImage = image
-        let size = image.size
-        let maxSide = max(size.width, size.height)
-
-        if maxSide > maxDimension {
-            let scale = maxDimension / maxSide
-            let newSize = CGSize(width: size.width * scale, height: size.height * scale)
-            let renderer = UIGraphicsImageRenderer(size: newSize)
-            targetImage = renderer.image { _ in
-                image.draw(in: CGRect(origin: .zero, size: newSize))
-            }
+    private func normalizeOrientation(_ image: UIImage) -> UIImage {
+        if image.imageOrientation == .up { return image }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
         }
-
-        guard let data = targetImage.jpegData(compressionQuality: 0.85) else { return nil }
-        return "data:image/jpeg;base64," + data.base64EncodedString()
     }
 
     private func base64ToImage(dataUrl: String) -> UIImage? {

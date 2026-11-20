@@ -14373,13 +14373,13 @@ function setupDetailVideo(photo, requested = {}) {
     // the decoder when returning to a stopped detail video, using its cached source.
     // Local original responses permit CORS. Opt in before loading so Crop and
     // Resize can read the already-decoded frame without starting another decoder.
-    if (srcUrl.startsWith('https://picshelf-originals.invalid/')) vid.crossOrigin = 'anonymous';
+    if (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/')) vid.crossOrigin = 'anonymous';
     else vid.removeAttribute('crossorigin');
     vid.src = srcUrl;
     vid.load();
   }
   _detailVideoNeedsReload = false;
-  const nativeOriginal = srcUrl.startsWith('https://picshelf-originals.invalid/') &&
+  const nativeOriginal = (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/')) &&
     (!/^clip_/.test(String(photo.id)) || photo.sharedVideoSource);
   if (!nativeOriginal && typeof getMediaBlobFromIDB === 'function' && typeof activeMediaBlobUrls !== 'undefined' && !activeMediaBlobUrls.has(photo.id)) {
     getMediaBlobFromIDB(photo.id).then(blob => {
@@ -18974,6 +18974,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     isGalleryTriggerBusy = true;
     setTimeout(() => { isGalleryTriggerBusy = false; }, 1000);
 
+    if (window.isNativeIOS && window.iOSApp && typeof window.iOSApp.openGallery === 'function') {
+      window.iOSApp.openGallery();
+      return;
+    }
+
     const fileInput = document.getElementById('imageFileInput');
     if (fileInput) {
       fileInput.value = '';
@@ -21743,7 +21748,37 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   window.unpackAndProcessFiles = unpackAndProcessFiles;
 
+  window._onIOSNativeImportFinished = async function (totalImported, targetAlbum) {
+    isGalleryTriggerBusy = false;
+    if (typeof scheduleStreamingDockRender === 'function' && window._streamingRenderTimer) {
+      clearTimeout(window._streamingRenderTimer);
+      window._streamingRenderTimer = null;
+    }
+    if (typeof streamingAlbumRenderTimer !== 'undefined' && streamingAlbumRenderTimer) {
+      clearTimeout(streamingAlbumRenderTimer);
+      streamingAlbumRenderTimer = null;
+    }
+    if (!totalImported || totalImported <= 0) return;
+    if (targetAlbum) {
+      if (typeof openAlbumInGallery === 'function') openAlbumInGallery(targetAlbum, true);
+    } else {
+      document.querySelector('.nav-item[data-tab="dockScreen"]')?.click();
+      renderDock();
+      if (typeof renderNavBadges === 'function') renderNavBadges();
+    }
+    try {
+      await saveStateImmediate();
+    } catch (err) {
+      console.error('iOS import saveStateImmediate error:', err);
+    }
+    showToast(`✅ Successfully imported ${Number(totalImported).toLocaleString()} item${totalImported > 1 ? 's' : ''}!`, 4000);
+  };
+
   window.triggerVideoImport = function () {
+    if (window.isNativeIOS && window.iOSApp && typeof window.iOSApp.openGallery === 'function') {
+      window.iOSApp.openGallery();
+      return;
+    }
     const vInput = document.getElementById('videoFileInput');
     if (vInput) {
       vInput.click();
@@ -21849,6 +21884,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     state.importTargetAlbum = targetAlbum;
+
+    if (window.isNativeIOS && window.iOSApp && typeof window.iOSApp.openGalleryForAlbum === 'function') {
+      window.iOSApp.openGalleryForAlbum(targetAlbum);
+      return;
+    }
 
     // Web / Mobile multi-file input
     const fileInput = document.getElementById('albumDirectFileInput');
@@ -27648,16 +27688,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function readResizeVideoFrame(url, time, filter, request, isCurrent = () => resizeState.sourceRequest === request) {
     // Android reads one frame directly from the authorized original. Avoid a
     // second WebView decoder, which can return black textures while playing.
-    if (url.startsWith('https://picshelf-originals.invalid/')) {
+    if (url.startsWith('https://picshelf-originals.invalid/') || url.startsWith('picshelf-originals://local/')) {
       const controller = new AbortController();
       request.cancelFrame = () => controller.abort();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
-        const endpoint = new URL(url);
-        endpoint.hostname = 'picshelf-thumbnails.invalid';
-        endpoint.pathname = endpoint.pathname.replace(/\/(tar|zip)\//, '/resize-frame-$1/');
-        endpoint.search = '?timeUs=' + Math.round(time * 1000000);
-        const response = await fetch(endpoint.href, { signal: controller.signal });
+        let thumbUrl;
+        if (url.startsWith('picshelf-originals://local/')) {
+          thumbUrl = url.replace('picshelf-originals://local/', 'picshelf-thumbnails://local/')
+            .replace(/\/(tar|zip)\//, '/resize-frame-$1/')
+            .replace(/\?.*$/, '') + '?timeUs=' + Math.round(time * 1000000);
+        } else {
+          const endpoint = new URL(url);
+          endpoint.hostname = 'picshelf-thumbnails.invalid';
+          endpoint.pathname = endpoint.pathname.replace(/\/(tar|zip)\//, '/resize-frame-$1/');
+          endpoint.search = '?timeUs=' + Math.round(time * 1000000);
+          thumbUrl = endpoint.href;
+        }
+        const response = await fetch(thumbUrl, { signal: controller.signal });
         if (!response.ok) throw Error('Resize frame unavailable');
         const frame = await response.json();
         if (!isCurrent() || !frame.poster || !frame.width || !frame.height) return null;

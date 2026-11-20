@@ -27916,6 +27916,21 @@ body.light-mode .detail-studio-save-preview {
   box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.2);
 }
 
+body.light-mode .album-view-btn {
+  background: #f1f5f9;
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+body.light-mode .album-view-options.open .album-view-btn,
+body.light-mode .album-view-btn.has-active-hide {
+  background: #fff1f3;
+  border-color: var(--primary);
+  color: #0f172a;
+  box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.2);
+}
+
 .album-view-options.open .album-sort-chevron {
   transform: rotate(180deg);
 }
@@ -28004,4 +28019,117 @@ body.light-mode .detail-studio-save-preview {
 
 #albumsScreen.albums-scroll-hidden-active .albums-card-grid {
   padding-bottom: 280px;
+}
+
+/* -------------------------------------------------------------
+   1-Tap Bulk Tag to Album Search Bar (#batchTagModal)
+   ------------------------------------------------------------- */
+.batch-tag-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.batch-tag-search-bar:focus-within {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--primary);
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.25);
+}
+
+.batch-tag-search-icon {
+  font-size: 13px;
+  color: var(--primary);
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.batch-tag-search-bar input {
+  flex: 1;
+  min-width: 0;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  color: var(--text-primary) !important;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.batch-tag-search-bar input::placeholder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.batch-tag-search-clear {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.batch-tag-search-clear:hover {
+  background: rgba(244, 63, 94, 0.22);
+  color: #ffffff;
+}
+
+.batch-tag-search-empty {
+  width: 100%;
+  padding: 12px 10px;
+  text-align: center;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+body.light-mode .batch-tag-search-bar {
+  background: #ffffff !important;
+  border: 1.5px solid #cbd5e1 !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+body.light-mode .batch-tag-search-bar:focus-within {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.16) !important;
+}
+
+body.light-mode .batch-tag-search-bar input {
+  color: #0f172a !important;
+  font-weight: 600 !important;
+  caret-color: #f43f5e !important;
+}
+
+body.light-mode .batch-tag-search-bar input::placeholder {
+  color: #94a3b8 !important;
+  font-weight: 400 !important;
+}
+
+body.light-mode .batch-tag-search-clear {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+body.light-mode .batch-tag-search-clear:hover {
+  background: rgba(244, 63, 94, 0.16);
+  color: #e11d48;
 }

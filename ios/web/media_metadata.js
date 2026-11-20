@@ -160,7 +160,8 @@
     if (job.cacheOnly) return null;
     const source = info(job.photo) || sessionInfo(job.photo);
     if (source) {
-      const url = `https://picshelf-thumbnails.invalid/${encodeURIComponent(source.token)}/metadata-${source.kind}/${source.offset}/${source.size}/${source.method}?type=${encodeURIComponent(source.mime)}${source.length == null ? '' : `&length=${source.length}`}`;
+      const thumbsOrigin = window.ArchiveSources?.thumbnailsOrigin || 'https://picshelf-thumbnails.invalid/';
+      const url = `${thumbsOrigin}${encodeURIComponent(source.token)}/metadata-${source.kind}/${source.offset}/${source.size}/${source.method}?type=${encodeURIComponent(source.mime)}${source.length == null ? '' : `&length=${source.length}`}`;
       const timeout = setTimeout(() => job.controller.abort(), 10000);
       try {
         const response = await fetch(url, { signal: job.controller.signal });

@@ -31,11 +31,19 @@
       offset, size, method, mime,
       length: Number.isSafeInteger(length) && length >= 0 ? length : (method === 0 ? size : null) };
   }
+  const ORIGINALS_ORIGIN = window.isNativeIOS ? 'picshelf-originals://local/' : 'https://picshelf-originals.invalid/';
+  const THUMBNAILS_ORIGIN = window.isNativeIOS ? 'picshelf-thumbnails://local/' : 'https://picshelf-thumbnails.invalid/';
+  function isOriginalUrl(url) {
+    return typeof url === 'string' && (url.startsWith('https://picshelf-originals.invalid/') || url.startsWith('picshelf-originals://local/'));
+  }
+  function isThumbnailUrl(url) {
+    return typeof url === 'string' && (url.startsWith('https://picshelf-thumbnails.invalid/') || url.startsWith('picshelf-thumbnails://local/'));
+  }
   function originalUrl(photo) {
     const info = entryInfo(photo);
     if (!info) return null;
     const length = info.length === null ? '' : `&length=${info.length}`;
-    return `https://picshelf-originals.invalid/${encodeURIComponent(info.token)}/${info.kind}/${info.offset}/${info.size}/${info.method}?type=${encodeURIComponent(info.mime)}${length}`;
+    return `${ORIGINALS_ORIGIN}${encodeURIComponent(info.token)}/${info.kind}/${info.offset}/${info.size}/${info.method}?type=${encodeURIComponent(info.mime)}${length}`;
   }
   async function originalBlob(photo) {
     const url = originalUrl(photo);
@@ -77,5 +85,10 @@
     const { token, kind, offset, size, method } = info;
     return { token, kind, offset, size, method };
   }
-  window.ArchiveSources = { entryInfo, originalUrl, originalBlob, nativeInfo };
+  window.ArchiveSources = {
+    entryInfo, originalUrl, originalBlob, nativeInfo,
+    originalsOrigin: ORIGINALS_ORIGIN,
+    thumbnailsOrigin: THUMBNAILS_ORIGIN,
+    isOriginalUrl, isThumbnailUrl
+  };
 })();

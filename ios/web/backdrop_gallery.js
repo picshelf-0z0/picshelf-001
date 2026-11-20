@@ -62,7 +62,8 @@
       // URL may have been revoked. Never use the preview endpoint as an original.
       const native = !photo.lastEditedAt && window.ArchiveSources?.originalUrl(photo);
       if (native) return decode(native);
-      if (validUrl(photo.dataUrl) && !photo.dataUrl.startsWith('https://picshelf-thumbnails.invalid/')) {
+      const isThumbUrl = window.ArchiveSources?.isThumbnailUrl ? window.ArchiveSources.isThumbnailUrl(photo.dataUrl) : photo.dataUrl.startsWith('https://picshelf-thumbnails.invalid/');
+      if (validUrl(photo.dataUrl) && !isThumbUrl) {
         try { return await decode(photo.dataUrl); } catch (_) {}
       }
       // Archive/fileBlob sources can still contain the unedited original.

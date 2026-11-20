@@ -79,7 +79,7 @@
     if (archived && !photo.lastEditedAt) {
       copy.fileBlob = null;
       for (const key of ['dataUrl', 'thumbUrl', 'videoUrl']) {
-        if (typeof copy[key] === 'string' && (copy[key].startsWith('blob:') || (copy[key].startsWith('https://picshelf-thumbnails.invalid/') || copy[key].startsWith('https://picshelf-originals.invalid/')))) copy[key] = null;
+        if (typeof copy[key] === 'string' && (copy[key].startsWith('blob:') || copy[key].startsWith('https://picshelf-thumbnails.invalid/') || copy[key].startsWith('https://picshelf-originals.invalid/') || copy[key].startsWith('picshelf-thumbnails://local/') || copy[key].startsWith('picshelf-originals://local/'))) copy[key] = null;
       }
     }
     const jobs = [];
