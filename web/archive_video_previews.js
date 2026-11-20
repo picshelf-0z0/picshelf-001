@@ -77,15 +77,16 @@
     try {return await photo._archiveVideoSourcePromise;} finally {delete photo._archiveVideoSourcePromise;}
   }
   function nativeUrl(photo) {
+    const thumbsOrigin = window.ArchiveSources?.thumbnailsOrigin || 'https://picshelf-thumbnails.invalid/';
     const source = !photo.lastEditedAt && !photo.originalDataUrl && window.ArchiveSources?.nativeInfo(photo);
-    if (source) return `https://picshelf-thumbnails.invalid/${encodeURIComponent(source.token)}/video-${source.kind}/${source.offset}/${source.size}/${source.method}`;
+    if (source) return `${thumbsOrigin}${encodeURIComponent(source.token)}/video-${source.kind}/${source.offset}/${source.size}/${source.method}`;
     const e = photo.tarEntry || photo.zipEntry, file = e?.tarFile || e?.zipFile || photo.fileBlob;
     if (!(file instanceof Blob) || !window.AndroidApp?.registerThumbnailArchive) return null;
     if (!registrations.has(file)) registrations.set(file, window.AndroidApp.registerThumbnailArchive(file.name || '', file.size));
     const token = registrations.get(file);
     if (!token) return null;
     const zip = !!photo.zipEntry;
-    return `https://picshelf-thumbnails.invalid/${token}/video-${zip ? 'zip' : 'tar'}/${zip ? e.localOffset : (e?.offset || 0)}/${zip ? e.compSize : (e?.size || file.size)}/${zip ? e.method : 0}`;
+    return `${thumbsOrigin}${token}/video-${zip ? 'zip' : 'tar'}/${zip ? e.localOffset : (e?.offset || 0)}/${zip ? e.compSize : (e?.size || file.size)}/${zip ? e.method : 0}`;
   }
   async function browserPreview(photo) {
     // A preview must not retain the original or a playback URL for every scrolled video.
@@ -94,7 +95,7 @@
     const url = photo.videoUrl || native || URL.createObjectURL(await entryBlob(photo));
     return new Promise((resolve, reject) => {
       const video = document.createElement('video');
-      if (url.startsWith('https://picshelf-originals.invalid/')) video.crossOrigin = 'anonymous';
+      if (window.ArchiveSources?.isOriginalUrl ? window.ArchiveSources.isOriginalUrl(url) : url.startsWith('https://picshelf-originals.invalid/')) video.crossOrigin = 'anonymous';
       video.muted = true; video.playsInline = true; video.preload = 'auto';
       let duration = null, finished = false;
       const finish = (result, error) => {

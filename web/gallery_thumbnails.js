@@ -17,7 +17,8 @@
 
   function retain(img) {
     const url = img.getAttribute('src');
-    if (!url?.startsWith('https://picshelf-thumbnails.invalid/') || !img.complete || !img.naturalWidth) return false;
+    const isThumb = window.ArchiveSources?.isThumbnailUrl ? window.ArchiveSources.isThumbnailUrl(url) : !!url?.startsWith('https://picshelf-thumbnails.invalid/');
+    if (!isThumb || !img.complete || !img.naturalWidth) return false;
     const old = decoded.get(url);
     if (old) { decodedPixels -= old.pixels; if (old.img !== img) old.img.removeAttribute('src'); decoded.delete(url); }
     const pixels = img.naturalWidth * img.naturalHeight;
@@ -87,7 +88,7 @@
       !/\.(gif|svg)$/i.test(photo.displayName || '') &&
       ((typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined' &&
       typeof createImageBitmap === 'function' && !!window._ZIP_WORKER_SCRIPT) ||
-      !!window.AndroidApp?.registerThumbnailArchive);
+      !!window.AndroidApp?.registerThumbnailArchive || !!window.isNativeIOS);
   }
   function register(file) {
     if (!file || !window.AndroidApp?.registerThumbnailArchive) return '';
@@ -100,13 +101,14 @@
   }
   function nativeUrl(photo) {
     if (nativeFailures.has(photo)) return null;
+    const thumbsOrigin = window.ArchiveSources?.thumbnailsOrigin || 'https://picshelf-thumbnails.invalid/';
     const source = !photo.lastEditedAt && !photo.originalDataUrl && window.ArchiveSources?.nativeInfo(photo);
-    if (source) return `https://picshelf-thumbnails.invalid/${encodeURIComponent(source.token)}/${source.kind}/${source.offset}/${source.size}/${source.method}`;
+    if (source) return `${thumbsOrigin}${encodeURIComponent(source.token)}/${source.kind}/${source.offset}/${source.size}/${source.method}`;
     const entry = photo.tarEntry || photo.zipEntry;
     const file = entry?.tarFile || entry?.zipFile;
     const token = register(file);
     if (!token) return null;
-    return `https://picshelf-thumbnails.invalid/${token}/${photo.tarEntry ? 'tar' : 'zip'}/${photo.tarEntry ? entry.offset : entry.localOffset}/${photo.tarEntry ? entry.size : entry.compSize}/${photo.tarEntry ? 0 : entry.method}`;
+    return `${thumbsOrigin}${token}/${photo.tarEntry ? 'tar' : 'zip'}/${photo.tarEntry ? entry.offset : entry.localOffset}/${photo.tarEntry ? entry.size : entry.compSize}/${photo.tarEntry ? 0 : entry.method}`;
   }
   function valid(record, photo) {
     return record && record.entry === (photo.tarEntry || photo.zipEntry) &&
@@ -240,7 +242,8 @@
     trim();
   }
   function handleError(img, id) {
-    if (!img.src.startsWith('https://picshelf-thumbnails.invalid/')) return false;
+    const isThumb = window.ArchiveSources?.isThumbnailUrl ? window.ArchiveSources.isThumbnailUrl(img.src) : img.src.startsWith('https://picshelf-thumbnails.invalid/');
+    if (!isThumb) return false;
     const photo = [...wanted.keys()].find(p => p.id === id);
     if (!photo) return true;
     nativeFailures.add(photo);

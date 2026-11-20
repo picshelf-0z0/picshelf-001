@@ -701,7 +701,8 @@
           if (key === 'fileBlob') value = null;
           else if ((key === 'dataUrl' || key === 'thumbUrl' || key === 'videoUrl') && typeof value === 'string' &&
             (value.startsWith('blob:') || value.startsWith('https://picshelf-thumbnails.invalid/') ||
-              value.startsWith('https://picshelf-originals.invalid/'))) value = null;
+              value.startsWith('https://picshelf-originals.invalid/') || value.startsWith('picshelf-thumbnails://local/') ||
+              value.startsWith('picshelf-originals://local/'))) value = null;
         }
         const encoded = encodeValue(value, key, original, INLINE_DATA);
         if (encoded !== undefined) out[key] = encoded;
