@@ -161,6 +161,7 @@ static OrtEnv *PicShelfSharedOrtEnv(const OrtApi *api, NSError **error) {
     OrtValue *outputTensor = NULL;
     OrtRunOptions *runOpts = NULL;
     OrtTensorTypeAndShapeInfo *shapeInfo = NULL;
+    NSMutableData *matte = nil;
     NSData *resultMatte = nil;
 
     if (!PicShelfCheckOrtStatus(_api, _api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &memInfo), error)) {
@@ -233,7 +234,7 @@ static OrtEnv *PicShelfSharedOrtEnv(const OrtApi *api, NSError **error) {
         goto cleanup;
     }
 
-    NSMutableData *matte = [NSMutableData dataWithLength:expectedPixels];
+    matte = [NSMutableData dataWithLength:expectedPixels];
     if (!matte) {
         if (error) {
             *error = [NSError errorWithDomain:kPicShelfOrtErrorDomain
