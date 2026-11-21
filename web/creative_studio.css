@@ -589,10 +589,39 @@ body.light-mode .creative-remove-ai-status.ready {
   grid-column: span 2;
 }
 .creative-slider-scroll {
-  max-height: 136px;
+  max-height: 158px;
   overflow-y: auto;
-  padding-right: 2px;
+  padding: 2px 2px 6px 2px;
   -webkit-overflow-scrolling: touch;
+}
+/* Zero-friction touch sliders inside Enhance (prevents vertical scroll / swipe from fighting horizontal drags) */
+#studioPanelEnhance .studio-slider {
+  touch-action: none !important;
+  height: 26px !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  -webkit-tap-highlight-color: transparent;
+}
+#studioPanelEnhance .studio-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+#studioPanelEnhance .studio-slider::-webkit-slider-thumb {
+  margin-top: -7px;
+  width: 20px;
+  height: 20px;
+  transition: none !important;
+}
+body.light-mode #studioPanelEnhance .studio-slider {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+body.light-mode #studioPanelEnhance .studio-slider::-webkit-slider-runnable-track {
+  background: #cbd5e1;
 }
 .creative-subnav-scroll {
   overflow-x: auto !important;
