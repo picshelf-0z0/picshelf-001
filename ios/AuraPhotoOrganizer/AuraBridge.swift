@@ -282,6 +282,17 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 presentPreparedShare(requestId: reqId, reopen: true)
             }
 
+        case "backdropPrecisionDownload":
+            PicShelfBackdropPrecisionManager.shared.startDownload()
+
+        case "backdropPrecisionStopDownload":
+            PicShelfBackdropPrecisionManager.shared.stopDownload()
+
+        case "backdropPrecisionCancel":
+            if let reqId = body["requestId"] as? String {
+                PicShelfBackdropPrecisionManager.shared.cancel(requestId: reqId)
+            }
+
         case "downloadPhoto":
             if let dataUrl = body["dataUrl"] as? String,
                let name = body["name"] as? String {

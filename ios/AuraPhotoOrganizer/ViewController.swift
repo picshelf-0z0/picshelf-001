@@ -2292,6 +2292,20 @@ The media/ folder inside also holds your original files directly if you ever ope
             let jobId = query["id"] ?? ""
             return jsonResp(reopenRestoreIndex(id: jobId))
 
+        case "precision-available":
+            return boolResp(PicShelfBackdropPrecisionManager.shared.isAvailable())
+
+        case "precision-status":
+            return jsonResp(PicShelfBackdropPrecisionManager.shared.modelStatusJson())
+
+        case "precision-segment":
+            let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            let reqId = obj["id"] as? String ?? ""
+            let img = obj["image"] as? String ?? ""
+            guard !reqId.isEmpty, !img.isEmpty else { return boolResp(false) }
+            PicShelfBackdropPrecisionManager.shared.segment(requestId: reqId, imageBase64: img)
+            return boolResp(true)
+
         default:
             return (404, "application/json", Data("{\"ok\":false,\"error\":\"unknown\"}".utf8))
         }
@@ -4993,6 +5007,36 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                     send('reopenMediaShare', { requestId: String(requestId || '') });
                     return true;
                 },
+                backdropPrecisionAvailable: function() {
+                    try {
+                        var live = backupSyncRequest('GET', 'precision-available', null);
+                        if (live !== null) return !!JSON.parse(live).ok;
+                    } catch (_) {}
+                    return false;
+                },
+                backdropPrecisionModelStatus: function() {
+                    var live = backupSyncRequest('GET', 'precision-status', null);
+                    return live !== null ? live : '{"state":"missing","downloaded":0,"total":0,"metered":false,"error":null}';
+                },
+                backdropPrecisionDownload: function() {
+                    send('backdropPrecisionDownload');
+                },
+                backdropPrecisionStopDownload: function() {
+                    send('backdropPrecisionStopDownload');
+                },
+                backdropPrecisionCancel: function(requestId) {
+                    send('backdropPrecisionCancel', { requestId: String(requestId || '') });
+                },
+                backdropPrecisionSegment: function(requestId, imageBase64) {
+                    backupPost('precision-segment', JSON.stringify({
+                        id: String(requestId || ''),
+                        image: String(imageBase64 || '')
+                    }), true).catch(function() {
+                        if (window.PicShelfBackdropPrecision && window.PicShelfBackdropPrecision.onNative) {
+                            window.PicShelfBackdropPrecision.onNative({ id: String(requestId || ''), error: 'Precision request failed' });
+                        }
+                    });
+                },
                 downloadPhoto: function(dataUrl, name) { send('downloadPhoto', { dataUrl: dataUrl, name: name }); },
                 executeDownloadBatch: function(batchJson) {
                     try {
@@ -5073,6 +5117,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         webView = WKWebView(frame: .zero, configuration: config)
         bridge.webView = webView
         PicShelfBackupManager.shared.webView = webView
+        PicShelfBackdropPrecisionManager.shared.webView = webView
         PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
         webView.navigationDelegate = self
         webView.uiDelegate = self

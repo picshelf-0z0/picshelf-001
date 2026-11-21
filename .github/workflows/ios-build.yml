@@ -28,12 +28,23 @@ jobs:
           else
             rsync -av --delete --exclude="*.apk" web/ ios/web/
           fi
-          ls -la ios/web
+          mkdir -p ios/web/models/backdrop_precision
+          if [ -f "app/src/main/assets/models/backdrop_precision/manifest.json" ]; then
+            cp -f app/src/main/assets/models/backdrop_precision/manifest.json ios/web/models/backdrop_precision/manifest.json
+          elif [ -f "models/backdrop_precision/manifest.json" ]; then
+            cp -f models/backdrop_precision/manifest.json ios/web/models/backdrop_precision/manifest.json
+          fi
+          ls -la ios/web ios/web/models/backdrop_precision
+
+      - name: Install CocoaPods (ONNX Runtime iOS)
+        run: |
+          cd ios
+          pod install --repo-update
 
       - name: Build Xcode Archive (iOS Device arm64)
         run: |
           xcodebuild clean archive \
-            -project ios/AuraPhotoOrganizer.xcodeproj \
+            -workspace ios/AuraPhotoOrganizer.xcworkspace \
             -scheme AuraPhotoOrganizer \
             -configuration Release \
             -archivePath build/AuraPhotoOrganizer.xcarchive \
@@ -55,7 +66,7 @@ jobs:
         continue-on-error: true
         run: |
           xcodebuild build \
-            -project ios/AuraPhotoOrganizer.xcodeproj \
+            -workspace ios/AuraPhotoOrganizer.xcworkspace \
             -scheme AuraPhotoOrganizer \
             -configuration Debug \
             -sdk iphonesimulator \
