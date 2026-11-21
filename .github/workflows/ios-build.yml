@@ -36,15 +36,65 @@ jobs:
           fi
           ls -la ios/web ios/web/models/backdrop_precision
 
-      - name: Install CocoaPods (ONNX Runtime iOS)
+      - name: Fetch Official ONNX Runtime iOS XCFramework (NuGet 1.32.0)
         run: |
-          cd ios
-          pod install --repo-update
+          python3 - <<'PY'
+          import urllib.request, struct, zlib, zipfile, io, os, shutil
+
+          nupkg_url = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.32.0/microsoft.ml.onnxruntime.1.32.0.nupkg"
+          out_dir = "ios/Frameworks"
+          os.makedirs(out_dir, exist_ok=True)
+          target_xcfw = os.path.join(out_dir, "onnxruntime.xcframework")
+          if os.path.exists(target_xcfw):
+              shutil.rmtree(target_xcfw)
+
+          req = urllib.request.Request(nupkg_url, method="HEAD")
+          with urllib.request.urlopen(req, timeout=30) as r:
+              total = int(r.headers["Content-Length"])
+
+          req = urllib.request.Request(nupkg_url, headers={"Range": f"bytes={max(0, total-65536)}-{total-1}"})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              tail = r.read()
+          idx = tail.rfind(b"PK\x05\x06")
+          cd_size, cd_offset = struct.unpack_from("<II", tail, idx + 12)
+
+          req = urllib.request.Request(nupkg_url, headers={"Range": f"bytes={cd_offset}-{cd_offset+cd_size-1}"})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              cd = r.read()
+
+          pos = 0
+          xcfw_entry = None
+          while pos + 46 <= len(cd) and cd[pos:pos+4] == b"PK\x01\x02":
+              method = struct.unpack_from("<H", cd, pos + 10)[0]
+              comp_sz, uncomp_sz, fn_len, ex_len, cm_len = struct.unpack_from("<IIHHH", cd, pos + 20)
+              lfh_off = struct.unpack_from("<I", cd, pos + 42)[0]
+              fn = cd[pos+46:pos+46+fn_len].decode("utf-8", errors="replace")
+              if fn == "runtimes/ios/native/onnxruntime.xcframework.zip":
+                  xcfw_entry = (method, comp_sz, uncomp_sz, lfh_off)
+                  break
+              pos += 46 + fn_len + ex_len + cm_len
+
+          assert xcfw_entry is not None, "onnxruntime.xcframework.zip not found in NuGet package"
+          method, comp_sz, uncomp_sz, lfh_off = xcfw_entry
+          print(f"Fetching onnxruntime.xcframework.zip ({comp_sz/1e6:.1f} MB) from NuGet...")
+          req = urllib.request.Request(nupkg_url, headers={"Range": f"bytes={lfh_off}-{lfh_off+30+256+comp_sz}"})
+          with urllib.request.urlopen(req, timeout=120) as r:
+              buf = r.read()
+          fnl, exl = struct.unpack_from("<HH", buf, 26)
+          raw = buf[30+fnl+exl:30+fnl+exl+comp_sz]
+          zbytes = raw if method == 0 else zlib.decompress(raw, -15)
+
+          with zipfile.ZipFile(io.BytesIO(zbytes)) as zf:
+              zf.extractall(out_dir)
+          print("Extracted:", os.listdir(target_xcfw))
+          PY
+          test -f ios/Frameworks/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/Headers/onnxruntime_c_api.h
+          ls -lh ios/Frameworks/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime
 
       - name: Build Xcode Archive (iOS Device arm64)
         run: |
           xcodebuild clean archive \
-            -workspace ios/AuraPhotoOrganizer.xcworkspace \
+            -project ios/AuraPhotoOrganizer.xcodeproj \
             -scheme AuraPhotoOrganizer \
             -configuration Release \
             -archivePath build/AuraPhotoOrganizer.xcarchive \
@@ -66,7 +116,7 @@ jobs:
         continue-on-error: true
         run: |
           xcodebuild build \
-            -workspace ios/AuraPhotoOrganizer.xcworkspace \
+            -project ios/AuraPhotoOrganizer.xcodeproj \
             -scheme AuraPhotoOrganizer \
             -configuration Debug \
             -sdk iphonesimulator \

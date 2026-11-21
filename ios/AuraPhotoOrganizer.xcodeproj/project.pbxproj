@@ -12,6 +12,7 @@
 		111111111111111111111116 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111115 /* ViewController.swift */; };
 		111111111111111111111118 /* AuraBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111117 /* AuraBridge.swift */; };
 		11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111A /* BackdropPrecisionManager.swift */; };
+		11111111111111111111111E /* OrtPrecisionBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111D /* OrtPrecisionBridge.m */; };
 		111111111111111111111121 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111120 /* LaunchScreen.storyboard */; };
 		111111111111111111111123 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111122 /* Assets.xcassets */; };
 		111111111111111111111125 /* web in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111124 /* web */; };
@@ -22,6 +23,9 @@
 		111111111111111111111140 /* CoreMotion.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111139 /* CoreMotion.framework */; };
 		111111111111111111111142 /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111141 /* CoreLocation.framework */; };
 		111111111111111111111144 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111143 /* AVFoundation.framework */; };
+		111111111111111111111146 /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111145 /* CoreML.framework */; };
+		111111111111111111111148 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111147 /* Accelerate.framework */; };
+		11111111111111111111114A /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111149 /* onnxruntime.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +35,9 @@
 		111111111111111111111115 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		111111111111111111111117 /* AuraBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraBridge.swift; sourceTree = "<group>"; };
 		11111111111111111111111A /* BackdropPrecisionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackdropPrecisionManager.swift; sourceTree = "<group>"; };
+		11111111111111111111111C /* OrtPrecisionBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OrtPrecisionBridge.h; sourceTree = "<group>"; };
+		11111111111111111111111D /* OrtPrecisionBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OrtPrecisionBridge.m; sourceTree = "<group>"; };
+		11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "AuraPhotoOrganizer-Bridging-Header.h"; sourceTree = "<group>"; };
 		111111111111111111111119 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		111111111111111111111120 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		111111111111111111111122 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -42,6 +49,9 @@
 		111111111111111111111139 /* CoreMotion.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMotion.framework; path = System/Library/Frameworks/CoreMotion.framework; sourceTree = SDKROOT; };
 		111111111111111111111141 /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 		111111111111111111111143 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		111111111111111111111145 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
+		111111111111111111111147 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
+		111111111111111111111149 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = onnxruntime.xcframework; path = Frameworks/onnxruntime.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +66,9 @@
 				111111111111111111111140 /* CoreMotion.framework in Frameworks */,
 				111111111111111111111142 /* CoreLocation.framework in Frameworks */,
 				111111111111111111111144 /* AVFoundation.framework in Frameworks */,
+				111111111111111111111146 /* CoreML.framework in Frameworks */,
+				111111111111111111111148 /* Accelerate.framework in Frameworks */,
+				11111111111111111111114A /* onnxruntime.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,6 +100,9 @@
 				111111111111111111111115 /* ViewController.swift */,
 				111111111111111111111117 /* AuraBridge.swift */,
 				11111111111111111111111A /* BackdropPrecisionManager.swift */,
+				11111111111111111111111C /* OrtPrecisionBridge.h */,
+				11111111111111111111111D /* OrtPrecisionBridge.m */,
+				11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */,
 				111111111111111111111120 /* LaunchScreen.storyboard */,
 				111111111111111111111122 /* Assets.xcassets */,
 				111111111111111111111119 /* Info.plist */,
@@ -105,6 +121,9 @@
 				111111111111111111111139 /* CoreMotion.framework */,
 				111111111111111111111141 /* CoreLocation.framework */,
 				111111111111111111111143 /* AVFoundation.framework */,
+				111111111111111111111145 /* CoreML.framework */,
+				111111111111111111111147 /* Accelerate.framework */,
+				111111111111111111111149 /* onnxruntime.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -185,6 +204,7 @@
 				111111111111111111111116 /* ViewController.swift in Sources */,
 				111111111111111111111118 /* AuraBridge.swift in Sources */,
 				11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */,
+				11111111111111111111111E /* OrtPrecisionBridge.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -319,9 +339,14 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.aistudio.photoorganizer.xwylza;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "AuraPhotoOrganizer/AuraPhotoOrganizer-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -341,9 +366,14 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lc++",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.aistudio.photoorganizer.xwylza;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "AuraPhotoOrganizer/AuraPhotoOrganizer-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

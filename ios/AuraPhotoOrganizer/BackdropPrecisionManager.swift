@@ -5,10 +5,6 @@ import ImageIO
 import CryptoKit
 import Network
 
-#if canImport(onnxruntime_objc)
-import onnxruntime_objc
-#endif
-
 /// On-device Backdrop "Precision" cutout for iOS (InSPyReNet SwinB 640x640 on ONNX Runtime).
 /// Exact parity with Android's BackdropPrecisionSegmenter.kt:
 /// - The ~112 MB model is NOT bundled in the IPA; only manifest.json is shipped.
@@ -72,10 +68,7 @@ final class PicShelfBackdropPrecisionManager {
     private var activeRequestId: String? = nil
     private var idleReleaseWork: DispatchWorkItem? = nil
 
-    #if canImport(onnxruntime_objc)
-    private var ortEnv: ORTEnv? = nil
-    private var ortSession: ORTSession? = nil
-    #endif
+    private var ortSession: PicShelfOrtSession? = nil
 
     private lazy var manifest: Manifest? = Self.readManifest()
 
@@ -96,9 +89,6 @@ final class PicShelfBackdropPrecisionManager {
     }
 
     private func availabilityReason() -> String? {
-        #if !canImport(onnxruntime_objc)
-        return "runtime unavailable"
-        #else
         if ProcessInfo.processInfo.physicalMemory < Self.minTotalMemory {
             return "low memory device"
         }
@@ -106,7 +96,6 @@ final class PicShelfBackdropPrecisionManager {
             return "model unavailable"
         }
         return nil
-        #endif
     }
 
     func modelStatusJson() -> String {
@@ -644,7 +633,11 @@ final class PicShelfBackdropPrecisionManager {
     func segment(requestId: String, imageBase64: String) {
         stateLock.lock()
         activeRequestId = requestId
+        let currentSession = ortSession
         stateLock.unlock()
+
+        // A newer photo replaces the one being processed; abort the old run promptly (matching Android).
+        currentSession?.terminateActiveRun()
 
         workerQueue.async { [weak self] in
             self?.processSegment(requestId: requestId, imageBase64: imageBase64)
@@ -653,10 +646,13 @@ final class PicShelfBackdropPrecisionManager {
 
     func cancel(requestId: String) {
         stateLock.lock()
+        var sessionToCancel: PicShelfOrtSession? = nil
         if activeRequestId == requestId {
             activeRequestId = nil
+            sessionToCancel = ortSession
         }
         stateLock.unlock()
+        sessionToCancel?.terminateActiveRun()
     }
 
     private func isCurrentRequest(_ requestId: String) -> Bool {
@@ -676,9 +672,11 @@ final class PicShelfBackdropPrecisionManager {
     }
 
     private func releaseSession() {
-        #if canImport(onnxruntime_objc)
+        stateLock.lock()
+        let old = ortSession
         ortSession = nil
-        #endif
+        stateLock.unlock()
+        old?.close()
     }
 
     private func sendResult(requestId: String, payload: [String: Any]) {
@@ -722,25 +720,19 @@ final class PicShelfBackdropPrecisionManager {
                 throw PrecisionError.runtime("model not downloaded")
             }
 
-            #if canImport(onnxruntime_objc)
-            let session: ORTSession
+            let session: PicShelfOrtSession
             if let existing = ortSession {
                 session = existing
             } else {
                 let loadStart = CACurrentMediaTime()
-                let env: ORTEnv
-                if let e = ortEnv {
-                    env = e
-                } else {
-                    env = try ORTEnv(loggingLevel: .warning)
-                    ortEnv = env
-                }
-                let opts = try ORTSessionOptions()
-                try opts.setGraphOptimizationLevel(.all)
                 let threads = Int32(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount)))
-                try opts.setIntraOpNumThreads(threads)
-                let created = try ORTSession(env: env, modelPath: assembledModelURL(spec).path, sessionOptions: opts)
+                let created = try PicShelfOrtSession(
+                    modelPath: assembledModelURL(spec).path,
+                    numThreads: threads
+                )
+                stateLock.lock()
                 ortSession = created
+                stateLock.unlock()
                 session = created
                 loadMs = Int64((CACurrentMediaTime() - loadStart) * 1000)
             }
@@ -750,38 +742,12 @@ final class PicShelfBackdropPrecisionManager {
             guard isCurrentRequest(requestId) else { return }
 
             let inferStart = CACurrentMediaTime()
-            let sizeNum = NSNumber(value: spec.size)
-            let inputTensor = try ORTValue(
-                tensorData: inputData,
-                elementType: .float,
-                shape: [1, 3, sizeNum, sizeNum]
+            let matte = try session.runFloatCHWInput(
+                inputData as Data,
+                inputName: spec.input,
+                outputName: spec.output,
+                size: Int32(spec.size)
             )
-            let outputs = try session.run(
-                withInputs: [spec.input: inputTensor],
-                outputNames: Set([spec.output]),
-                runOptions: nil
-            )
-            guard let outValue = outputs[spec.output] else {
-                throw PrecisionError.runtime("Precision model returned no mask")
-            }
-            let outData = try outValue.tensorData() as Data
-            let count = spec.size * spec.size
-            guard outData.count >= count * MemoryLayout<Float>.size else {
-                throw PrecisionError.runtime("Unexpected precision mask size")
-            }
-
-            var matte = Data(count: count)
-            matte.withUnsafeMutableBytes { dstRaw in
-                let dst = dstRaw.bindMemory(to: UInt8.self)
-                outData.withUnsafeBytes { srcRaw in
-                    let src = srcRaw.bindMemory(to: Float.self)
-                    for i in 0..<count {
-                        let v = src[i]
-                        let clamped = v < 0 ? 0 : (v > 1 ? 1 : v)
-                        dst[i] = UInt8((clamped * 255.0).rounded())
-                    }
-                }
-            }
             inferenceMs = Int64((CACurrentMediaTime() - inferStart) * 1000)
             guard isCurrentRequest(requestId) else { return }
 
@@ -790,9 +756,6 @@ final class PicShelfBackdropPrecisionManager {
                 "size": spec.size,
                 "timing": timingDict()
             ])
-            #else
-            throw PrecisionError.runtime("Precision runtime unavailable")
-            #endif
         } catch {
             guard isCurrentRequest(requestId) else { return }
             sendResult(requestId: requestId, payload: [
