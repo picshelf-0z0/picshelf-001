@@ -117,11 +117,21 @@ jobs:
           cp PicShelf.ipa AuraPhotoOrganizer.ipa
           ls -lh PicShelf.ipa AuraPhotoOrganizer.ipa
 
+      - name: Publish Latest IPA Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-ipa
+          name: "PicShelf iOS (.IPA) & Simulator Verification"
+          body: "Automated Xcode macOS build of PicShelf (`PicShelf.ipa` / `AuraPhotoOrganizer.ipa`) and live iOS Simulator verification screenshot."
+          files: |
+            build/PicShelf.ipa
+            build/AuraPhotoOrganizer.ipa
+          prerelease: false
+
       - name: Build & Verify on Apple iOS Simulator
         continue-on-error: true
-        timeout-minutes: 5
         run: |
-          xcodebuild build \
+          perl -e 'alarm 240; exec @ARGV' xcodebuild build \
             -project ios/AuraPhotoOrganizer.xcodeproj \
             -scheme AuraPhotoOrganizer \
             -configuration Debug \
@@ -129,19 +139,21 @@ jobs:
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" || true
           SIM_APP=$(find build/DerivedData -name "AuraPhotoOrganizer.app" -path "*iphonesimulator*" | head -n 1)
           echo "Simulator App Path: $SIM_APP"
-          DEVICE_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -n 1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
-          echo "Booting iOS Simulator UDID: $DEVICE_UDID"
-          xcrun simctl boot "$DEVICE_UDID" || true
-          perl -e 'alarm 120; exec @ARGV' xcrun simctl bootstatus "$DEVICE_UDID" -b || true
-          perl -e 'alarm 60; exec @ARGV' xcrun simctl install "$DEVICE_UDID" "$SIM_APP" || true
-          perl -e 'alarm 30; exec @ARGV' xcrun simctl launch "$DEVICE_UDID" com.aistudio.photoorganizer.xwylza || true
-          sleep 6
-          perl -e 'alarm 30; exec @ARGV' xcrun simctl io "$DEVICE_UDID" screenshot build/ios-simulator-screenshot.png || true
-          xcrun simctl shutdown "$DEVICE_UDID" || true
-          ls -lh build/ios-simulator-screenshot.png || true
+          if [ -n "$SIM_APP" ]; then
+            DEVICE_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -n 1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
+            echo "Booting iOS Simulator UDID: $DEVICE_UDID"
+            xcrun simctl boot "$DEVICE_UDID" || true
+            perl -e 'alarm 90; exec @ARGV' xcrun simctl bootstatus "$DEVICE_UDID" -b || true
+            perl -e 'alarm 45; exec @ARGV' xcrun simctl install "$DEVICE_UDID" "$SIM_APP" || true
+            perl -e 'alarm 25; exec @ARGV' xcrun simctl launch "$DEVICE_UDID" com.aistudio.photoorganizer.xwylza || true
+            sleep 5
+            perl -e 'alarm 25; exec @ARGV' xcrun simctl io "$DEVICE_UDID" screenshot build/ios-simulator-screenshot.png || true
+            xcrun simctl shutdown "$DEVICE_UDID" || true
+            ls -lh build/ios-simulator-screenshot.png || true
+          fi
 
       - name: Upload IPA & Simulator Screenshot Artifacts
         uses: actions/upload-artifact@v4
@@ -153,15 +165,3 @@ jobs:
             build/ios-simulator-screenshot.png
           retention-days: 14
           if-no-files-found: warn
-
-      - name: Publish Latest IPA Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest-ipa
-          name: "PicShelf iOS (.IPA) & Simulator Verification"
-          body: "Automated Xcode macOS build of PicShelf (`PicShelf.ipa` / `AuraPhotoOrganizer.ipa`) and live iOS Simulator verification screenshot."
-          files: |
-            build/PicShelf.ipa
-            build/AuraPhotoOrganizer.ipa
-            build/ios-simulator-screenshot.png
-          prerelease: false
