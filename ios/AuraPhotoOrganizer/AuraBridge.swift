@@ -21,11 +21,33 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     private var isGpsMetadataEnabled: Bool = true
     private let importQueue = DispatchQueue(label: "com.picshelf.ios.importQueue", qos: .userInitiated)
     private let downloadQueue = DispatchQueue(label: "com.picshelf.ios.downloadQueue", qos: .userInitiated)
+    private let shareQueue = DispatchQueue(label: "com.picshelf.ios.mediaShareQueue", qos: .userInitiated)
     private let photosMirrorQueue = DispatchQueue(label: "com.picshelf.ios.photosMirror", qos: .utility)
     private let downloadStateLock = NSLock()
     private var stagedStreams: [String: URL] = [:]
     private var cancelledDownloadSessions: Set<String> = []
     private var cancelledDownloadItems: Set<String> = []
+
+    private final class ShareArchiveSession {
+        let requestId: String
+        let sessionDir: URL
+        let total: Int
+        var completed: Int = 0
+        var bytesWritten: UInt64 = 0
+        var files: [(entryName: String, url: URL, size: UInt64)] = []
+        init(requestId: String, sessionDir: URL, total: Int) {
+            self.requestId = requestId
+            self.sessionDir = sessionDir
+            self.total = total
+        }
+    }
+    private let shareLock = NSLock()
+    private var shareStagedStreams: [String: URL] = [:]
+    private var shareStreamOwners: [String: String] = [:]
+    private var cancelledShareRequests: Set<String> = []
+    private var preparedShares: [String: (dir: URL, urls: [URL])] = [:]
+    private var shareLaunchedRequests: Set<String> = []
+    private var shareArchiveSessions: [String: ShareArchiveSession] = [:]
 
     // Sensors
     private let motionManager = CMMotionManager()
@@ -207,6 +229,57 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
             if let photos = body["photos"] as? String {
                 let title = body["title"] as? String ?? "Photos"
                 shareMultiplePhotos(photosJson: photos, albumTitle: title)
+            }
+
+        case "beginMediaShareStream":
+            if let token = body["token"] as? String {
+                let reqId = body["requestId"] as? String ?? ""
+                beginMediaShareStream(requestId: reqId, token: token)
+            }
+
+        case "appendMediaShareStream":
+            if let token = body["token"] as? String,
+               let base64 = body["base64"] as? String {
+                appendMediaShareStream(token: token, base64: base64)
+            }
+
+        case "sealMediaShareStream":
+            break
+
+        case "discardMediaShareStream":
+            if let token = body["token"] as? String {
+                discardMediaShareStream(token: token)
+            }
+
+        case "cancelMediaShare":
+            if let reqId = body["requestId"] as? String {
+                cancelMediaShare(requestId: reqId)
+            }
+
+        case "shareMediaBatch":
+            if let payloadJson = body["payloadJson"] as? String {
+                shareMediaBatch(payloadJson: payloadJson)
+            }
+
+        case "beginMediaShareArchive":
+            if let reqId = body["requestId"] as? String {
+                let total = (body["total"] as? NSNumber)?.intValue ?? 0
+                beginMediaShareArchive(requestId: reqId, total: total)
+            }
+
+        case "shareMediaArchiveBatch":
+            if let payloadJson = body["payloadJson"] as? String {
+                shareMediaArchiveBatch(payloadJson: payloadJson)
+            }
+
+        case "resumeMediaShare":
+            if let reqId = body["requestId"] as? String {
+                presentPreparedShare(requestId: reqId, reopen: false)
+            }
+
+        case "reopenMediaShare":
+            if let reqId = body["requestId"] as? String {
+                presentPreparedShare(requestId: reqId, reopen: true)
             }
 
         case "downloadPhoto":
@@ -1378,6 +1451,539 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
             popover.permittedArrowDirections = []
         }
         viewController?.present(activityVC, animated: true)
+    }
+
+    // MARK: - Native MediaShare Engine (Exact Android Parity: Instant UIActivityViewController, Zero Gesture Timeout, Multi-File & ZIP)
+
+    private func shareRootDirectory() -> URL {
+        let fm = FileManager.default
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first ?? fm.temporaryDirectory
+        let dir = caches.appendingPathComponent("PicShelfShare", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func cleanupExpiredShareSessions() {
+        let fm = FileManager.default
+        let root = shareRootDirectory()
+        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        shareLock.lock()
+        let protectedDirs = Set(preparedShares.values.map { $0.dir.lastPathComponent })
+            .union(shareArchiveSessions.values.map { $0.sessionDir.lastPathComponent })
+        let protectedStages = Set(shareStagedStreams.values.map { $0.lastPathComponent })
+        shareLock.unlock()
+
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for url in entries {
+            let name = url.lastPathComponent
+            if protectedDirs.contains(name) || protectedStages.contains(name) { continue }
+            if let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+               let mod = vals.contentModificationDate, mod < cutoff {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
+
+    private func emitMediaShareEvent(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript("window.MediaShare && window.MediaShare.onNative(\(json));", completionHandler: nil)
+        }
+    }
+
+    private func isShareCancelled(_ requestId: String) -> Bool {
+        shareLock.lock()
+        let cancelled = cancelledShareRequests.contains(requestId)
+        shareLock.unlock()
+        return cancelled
+    }
+
+    private func beginMediaShareStream(requestId: String, token: String) {
+        shareQueue.async { [weak self] in
+            guard let self = self else { return }
+            let url = self.shareRootDirectory().appendingPathComponent("stage_\(token).bin")
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            self.shareLock.lock()
+            self.shareStagedStreams[token] = url
+            self.shareStreamOwners[token] = requestId
+            self.shareLock.unlock()
+        }
+    }
+
+    private func appendMediaShareStream(token: String, base64: String) {
+        shareQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.shareLock.lock()
+            let url = self.shareStagedStreams[token]
+            let owner = self.shareStreamOwners[token] ?? ""
+            let cancelled = !owner.isEmpty && self.cancelledShareRequests.contains(owner)
+            self.shareLock.unlock()
+            guard !cancelled, let url = url,
+                  let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+                  let fh = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? fh.close() }
+            _ = try? fh.seekToEnd()
+            fh.write(data)
+        }
+    }
+
+    private func discardMediaShareStream(token: String) {
+        shareQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.shareLock.lock()
+            let url = self.shareStagedStreams.removeValue(forKey: token)
+            self.shareStreamOwners.removeValue(forKey: token)
+            self.shareLock.unlock()
+            if let url = url { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    private func cancelMediaShare(requestId: String) {
+        shareLock.lock()
+        let wasLaunched = shareLaunchedRequests.contains(requestId)
+        if wasLaunched {
+            // Receiver app may still be reading files; release only tracking state
+            preparedShares.removeValue(forKey: requestId)
+            shareLaunchedRequests.remove(requestId)
+            shareLock.unlock()
+            return
+        }
+        cancelledShareRequests.insert(requestId)
+        let ownedTokens = shareStreamOwners.filter { $0.value == requestId }.map { $0.key }
+        var toDelete: [URL] = []
+        for tok in ownedTokens {
+            shareStreamOwners.removeValue(forKey: tok)
+            if let u = shareStagedStreams.removeValue(forKey: tok) { toDelete.append(u) }
+        }
+        if let prep = preparedShares.removeValue(forKey: requestId) { toDelete.append(prep.dir) }
+        if let arch = shareArchiveSessions.removeValue(forKey: requestId) { toDelete.append(arch.sessionDir) }
+        shareLock.unlock()
+
+        shareQueue.async {
+            for u in toDelete { try? FileManager.default.removeItem(at: u) }
+        }
+    }
+
+    private func materializeShareItem(_ item: [String: Any], in sessionDir: URL, requestId: String) -> (url: URL, fileName: String, size: UInt64)? {
+        let rawName = (item["fileName"] as? String) ?? "PicShelf_media.jpg"
+        let cleanName = (rawName as NSString).lastPathComponent
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let safeName = cleanName.isEmpty ? "PicShelf_media.jpg" : cleanName
+        let source = item["source"] as? [String: Any] ?? [:]
+        let videoEdit = item["videoEdit"] as? [String: Any]
+        let unique = uniqueDestinationURL(in: sessionDir, fileName: safeName)
+        let dstURL = unique.url
+        let fm = FileManager.default
+
+        var preparedURL: URL? = nil
+        var shouldDeleteTemp = false
+
+        if let stagedToken = source["staged"] as? String {
+            shareLock.lock()
+            let stagedURL = shareStagedStreams.removeValue(forKey: stagedToken)
+            shareStreamOwners.removeValue(forKey: stagedToken)
+            shareLock.unlock()
+            if let src = stagedURL, fm.fileExists(atPath: src.path) {
+                if (try? fm.moveItem(at: src, to: dstURL)) != nil {
+                    preparedURL = dstURL
+                }
+            }
+        } else if let exported = source["exported"] as? [String: Any] {
+            let uriStr = (exported["uri"] as? String) ?? (exported["savedUri"] as? String) ?? ""
+            if let u = URL(string: uriStr), u.isFileURL, fm.fileExists(atPath: u.path) {
+                if (try? fm.copyItem(at: u, to: dstURL)) != nil {
+                    preparedURL = dstURL
+                }
+            }
+        } else if let assetPath = source["asset"] as? String {
+            if let bundleURL = resolveBundleAssetURL(assetPath) {
+                if (try? fm.copyItem(at: bundleURL, to: dstURL)) != nil {
+                    preparedURL = dstURL
+                }
+            }
+        } else if let token = source["token"] as? String,
+                  let kind = source["kind"] as? String,
+                  let offset = (source["offset"] as? NSNumber)?.uint64Value,
+                  let size = (source["size"] as? NSNumber)?.uint64Value {
+            let method = (source["method"] as? NSNumber)?.intValue ?? 0
+            let ext = (safeName as NSString).pathExtension.isEmpty ? "bin" : (safeName as NSString).pathExtension
+            if let extracted = PicShelfMediaStore.shared.extractEntryToTempFile(sourceId: token, kind: kind, offset: offset, size: size, method: method, ext: ext) {
+                if extracted.isTemporary {
+                    if (try? fm.moveItem(at: extracted.url, to: dstURL)) != nil {
+                        preparedURL = dstURL
+                    } else {
+                        try? fm.removeItem(at: extracted.url)
+                    }
+                } else {
+                    // Instant APFS CoW clone of standalone file into sessionDir with exact share filename
+                    if (try? fm.copyItem(at: extracted.url, to: dstURL)) != nil {
+                        preparedURL = dstURL
+                    }
+                }
+            }
+        }
+
+        guard var finalURL = preparedURL, fm.fileExists(atPath: finalURL.path) else { return nil }
+        var finalName = unique.finalName
+
+        if let edit = videoEdit, !edit.isEmpty {
+            let base = (finalName as NSString).deletingPathExtension
+            let editedUnique = uniqueDestinationURL(in: sessionDir, fileName: "\(base)_edited.mp4")
+            if exportVideoWithEditsIfNeeded(from: finalURL, to: editedUnique.url, videoEdit: edit) {
+                try? fm.removeItem(at: finalURL)
+                finalURL = editedUnique.url
+                finalName = editedUnique.finalName
+            }
+        }
+        _ = shouldDeleteTemp
+        let sz = ((try? fm.attributesOfItem(atPath: finalURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        guard sz > 0 else { return nil }
+        return (finalURL, finalName, sz)
+    }
+
+    private func shareMediaBatch(payloadJson: String) {
+        guard let data = payloadJson.data(using: .utf8),
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let requestId = body["requestId"] as? String,
+              let items = body["items"] as? [[String: Any]], !items.isEmpty else { return }
+
+        shareQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.cleanupExpiredShareSessions()
+            if self.isShareCancelled(requestId) { return }
+
+            let sessionDir = self.shareRootDirectory().appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+            } catch {
+                self.emitMediaShareEvent(["requestId": requestId, "status": "error"])
+                return
+            }
+
+            var urls: [URL] = []
+            urls.reserveCapacity(items.count)
+            let total = items.count
+            var lastEmit = 0.0
+
+            for (idx, item) in items.enumerated() {
+                if self.isShareCancelled(requestId) {
+                    try? FileManager.default.removeItem(at: sessionDir)
+                    self.emitMediaShareEvent(["requestId": requestId, "status": "cancelled"])
+                    return
+                }
+                let mat: (url: URL, fileName: String, size: UInt64)? = autoreleasepool {
+                    return self.materializeShareItem(item, in: sessionDir, requestId: requestId)
+                }
+                guard let valid = mat else {
+                    try? FileManager.default.removeItem(at: sessionDir)
+                    self.emitMediaShareEvent(["requestId": requestId, "status": "error"])
+                    return
+                }
+                urls.append(valid.url)
+                let now = CACurrentMediaTime()
+                if now - lastEmit >= 0.1 || idx + 1 == total {
+                    lastEmit = now
+                    self.emitMediaShareEvent([
+                        "requestId": requestId,
+                        "status": "preparing",
+                        "fraction": Double(idx + 1) / Double(total),
+                        "phase": "preparing",
+                        "fileName": valid.fileName,
+                        "completed": idx + 1,
+                        "total": total
+                    ])
+                }
+            }
+
+            if self.isShareCancelled(requestId) {
+                try? FileManager.default.removeItem(at: sessionDir)
+                self.emitMediaShareEvent(["requestId": requestId, "status": "cancelled"])
+                return
+            }
+
+            self.shareLock.lock()
+            self.preparedShares[requestId] = (dir: sessionDir, urls: urls)
+            self.shareLock.unlock()
+
+            self.emitMediaShareEvent([
+                "requestId": requestId,
+                "status": "prepared",
+                "fraction": 1.0,
+                "completed": total,
+                "total": total
+            ])
+            self.presentPreparedShare(requestId: requestId, reopen: false)
+        }
+    }
+
+    private func beginMediaShareArchive(requestId: String, total: Int) {
+        shareQueue.async { [weak self] in
+            guard let self = self, total > 0 else { return }
+            self.cleanupExpiredShareSessions()
+            let sessionDir = self.shareRootDirectory().appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+            let filesDir = sessionDir.appendingPathComponent("files", isDirectory: true)
+            try? FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
+            let session = ShareArchiveSession(requestId: requestId, sessionDir: sessionDir, total: total)
+            self.shareLock.lock()
+            self.shareArchiveSessions[requestId] = session
+            self.shareLock.unlock()
+        }
+    }
+
+    private func shareMediaArchiveBatch(payloadJson: String) {
+        guard let data = payloadJson.data(using: .utf8),
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let requestId = body["requestId"] as? String,
+              let items = body["items"] as? [[String: Any]] else { return }
+
+        shareQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.shareLock.lock()
+            let session = self.shareArchiveSessions[requestId]
+            self.shareLock.unlock()
+            guard let session = session else {
+                self.emitMediaShareEvent(["requestId": requestId, "status": "error"])
+                return
+            }
+
+            let filesDir = session.sessionDir.appendingPathComponent("files", isDirectory: true)
+            var lastEmit = 0.0
+
+            for item in items {
+                if self.isShareCancelled(requestId) {
+                    try? FileManager.default.removeItem(at: session.sessionDir)
+                    self.shareLock.lock()
+                    self.shareArchiveSessions.removeValue(forKey: requestId)
+                    self.shareLock.unlock()
+                    self.emitMediaShareEvent(["requestId": requestId, "status": "cancelled"])
+                    return
+                }
+                let mat: (url: URL, fileName: String, size: UInt64)? = autoreleasepool {
+                    return self.materializeShareItem(item, in: filesDir, requestId: requestId)
+                }
+                guard let valid = mat else {
+                    try? FileManager.default.removeItem(at: session.sessionDir)
+                    self.shareLock.lock()
+                    self.shareArchiveSessions.removeValue(forKey: requestId)
+                    self.shareLock.unlock()
+                    self.emitMediaShareEvent(["requestId": requestId, "status": "error"])
+                    return
+                }
+                session.completed += 1
+                session.bytesWritten += valid.size
+                let paddedPrefix = String(format: "%09d_", session.completed)
+                session.files.append((entryName: paddedPrefix + valid.fileName, url: valid.url, size: valid.size))
+
+                let now = CACurrentMediaTime()
+                if now - lastEmit >= 0.12 || session.completed == session.total {
+                    lastEmit = now
+                    self.emitMediaShareEvent([
+                        "requestId": requestId,
+                        "status": "preparing",
+                        "fraction": Double(session.completed) / Double(max(1, session.total)) * 0.85,
+                        "phase": "archiving",
+                        "fileName": valid.fileName,
+                        "completed": session.completed,
+                        "total": session.total,
+                        "bytesWritten": session.bytesWritten
+                    ])
+                }
+            }
+
+            if session.completed < session.total {
+                self.emitMediaShareEvent([
+                    "requestId": requestId,
+                    "status": "archiveBatchReady",
+                    "fraction": Double(session.completed) / Double(max(1, session.total)) * 0.85,
+                    "completed": session.completed,
+                    "total": session.total,
+                    "bytesWritten": session.bytesWritten
+                ])
+                return
+            }
+
+            let zipURL = session.sessionDir.appendingPathComponent("PicShelf_Media.zip")
+            let ok = self.writeStoredZipArchive(files: session.files, to: zipURL, requestId: requestId)
+            try? FileManager.default.removeItem(at: filesDir)
+            self.shareLock.lock()
+            self.shareArchiveSessions.removeValue(forKey: requestId)
+            self.shareLock.unlock()
+
+            if !ok || self.isShareCancelled(requestId) {
+                try? FileManager.default.removeItem(at: session.sessionDir)
+                self.emitMediaShareEvent(["requestId": requestId, "status": self.isShareCancelled(requestId) ? "cancelled" : "error"])
+                return
+            }
+
+            self.shareLock.lock()
+            self.preparedShares[requestId] = (dir: session.sessionDir, urls: [zipURL])
+            self.shareLock.unlock()
+
+            self.emitMediaShareEvent([
+                "requestId": requestId,
+                "status": "prepared",
+                "fraction": 1.0,
+                "completed": session.total,
+                "total": session.total
+            ])
+            self.presentPreparedShare(requestId: requestId, reopen: false)
+        }
+    }
+
+    private func writeStoredZipArchive(files: [(entryName: String, url: URL, size: UInt64)], to zipURL: URL, requestId: String) -> Bool {
+        FileManager.default.createFile(atPath: zipURL.path, contents: nil)
+        guard let outFH = try? FileHandle(forWritingTo: zipURL) else { return false }
+        defer { try? outFH.close() }
+
+        func u16(_ v: UInt16) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 2) }
+        func u32(_ v: UInt32) -> Data { var x = v.littleEndian; return Data(bytes: &x, count: 4) }
+
+        struct CentralEntry {
+            let nameData: Data
+            let crc: UInt32
+            let size: UInt32
+            let localOffset: UInt32
+        }
+        var centralEntries: [CentralEntry] = []
+        centralEntries.reserveCapacity(files.count)
+
+        for entry in files {
+            if isShareCancelled(requestId) { return false }
+            guard entry.size <= UInt64(UInt32.max),
+                  let inFH = try? FileHandle(forReadingFrom: entry.url) else { continue }
+            defer { try? inFH.close() }
+
+            // Compute CRC32 in streaming 256 KB chunks
+            var crc: UInt32 = 0
+            var actualSize: UInt64 = 0
+            while true {
+                var stop = false
+                autoreleasepool {
+                    if let chunk = try? inFH.read(upToCount: 262144), !chunk.isEmpty {
+                        crc = BackupCRC32.update(crc, data: chunk)
+                        actualSize += UInt64(chunk.count)
+                    } else {
+                        stop = true
+                    }
+                }
+                if stop { break }
+            }
+            guard actualSize <= UInt64(UInt32.max), (try? inFH.seek(toOffset: 0)) != nil else { continue }
+            let localOffset = UInt32(truncatingIfNeeded: outFH.offsetInFile)
+            let nameData = Data(entry.entryName.utf8)
+            let sz32 = UInt32(actualSize)
+
+            var lfh = Data()
+            lfh.append(u32(0x04034b50)) // signature
+            lfh.append(u16(20))         // version needed
+            lfh.append(u16(0x0800))     // UTF-8 flag
+            lfh.append(u16(0))          // method = STORE
+            lfh.append(u16(0))          // mod time
+            lfh.append(u16(0))          // mod date
+            lfh.append(u32(crc))
+            lfh.append(u32(sz32))
+            lfh.append(u32(sz32))
+            lfh.append(u16(UInt16(nameData.count)))
+            lfh.append(u16(0))
+            lfh.append(nameData)
+            outFH.write(lfh)
+
+            while true {
+                var stop = false
+                autoreleasepool {
+                    if let chunk = try? inFH.read(upToCount: 262144), !chunk.isEmpty {
+                        outFH.write(chunk)
+                    } else {
+                        stop = true
+                    }
+                }
+                if stop { break }
+            }
+            centralEntries.append(CentralEntry(nameData: nameData, crc: crc, size: sz32, localOffset: localOffset))
+        }
+
+        let cdStart = UInt32(truncatingIfNeeded: outFH.offsetInFile)
+        for ce in centralEntries {
+            var cdh = Data()
+            cdh.append(u32(0x02014b50))
+            cdh.append(u16(20))
+            cdh.append(u16(20))
+            cdh.append(u16(0x0800))
+            cdh.append(u16(0))
+            cdh.append(u16(0))
+            cdh.append(u16(0))
+            cdh.append(u32(ce.crc))
+            cdh.append(u32(ce.size))
+            cdh.append(u32(ce.size))
+            cdh.append(u16(UInt16(ce.nameData.count)))
+            cdh.append(u16(0))
+            cdh.append(u16(0))
+            cdh.append(u16(0))
+            cdh.append(u16(0))
+            cdh.append(u32(0))
+            cdh.append(u32(ce.localOffset))
+            cdh.append(ce.nameData)
+            outFH.write(cdh)
+        }
+        let cdSize = UInt32(truncatingIfNeeded: outFH.offsetInFile) - cdStart
+        var eocd = Data()
+        eocd.append(u32(0x06054b50))
+        eocd.append(u16(0))
+        eocd.append(u16(0))
+        eocd.append(u16(UInt16(min(centralEntries.count, Int(UInt16.max)))))
+        eocd.append(u16(UInt16(min(centralEntries.count, Int(UInt16.max)))))
+        eocd.append(u32(cdSize))
+        eocd.append(u32(cdStart))
+        eocd.append(u16(0))
+        outFH.write(eocd)
+        return !centralEntries.isEmpty
+    }
+
+    private func presentPreparedShare(requestId: String, reopen: Bool) {
+        shareLock.lock()
+        let cancelled = cancelledShareRequests.contains(requestId)
+        let alreadyLaunched = shareLaunchedRequests.contains(requestId)
+        let entry = preparedShares[requestId]
+        shareLock.unlock()
+
+        guard !cancelled, let entry = entry, !entry.urls.isEmpty else { return }
+        if alreadyLaunched && !reopen { return }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let vc = self.viewController else { return }
+            guard UIApplication.shared.applicationState == .active, vc.presentedViewController == nil else {
+                self.emitMediaShareEvent(["requestId": requestId, "status": "prepared", "fraction": 1.0])
+                return
+            }
+
+            self.shareLock.lock()
+            let stillCancelled = self.cancelledShareRequests.contains(requestId)
+            let launchedNow = self.shareLaunchedRequests.contains(requestId)
+            if stillCancelled || (launchedNow && !reopen) {
+                self.shareLock.unlock()
+                return
+            }
+            self.shareLaunchedRequests.insert(requestId)
+            self.shareLock.unlock()
+
+            let activityVC = UIActivityViewController(activityItems: entry.urls, applicationActivities: nil)
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView = vc.view
+                popover.sourceRect = CGRect(x: vc.view.bounds.midX, y: vc.view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            vc.present(activityVC, animated: true) {
+                self.emitMediaShareEvent([
+                    "requestId": requestId,
+                    "status": "ready",
+                    "fraction": 1.0,
+                    "completed": entry.urls.count,
+                    "total": entry.urls.count
+                ])
+            }
+        }
     }
 
     // MARK: - Superfast Native iOS Download Engine (Files › On My iPhone › PicShelf + Optional Apple Photos Mirror)

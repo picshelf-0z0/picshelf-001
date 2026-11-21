@@ -52,11 +52,12 @@
   function place() {
     positionFrame=0;if(!ui||ui.modal.hidden)return;
     const viewport=window.visualViewport,width=viewport?.width||window.innerWidth,height=viewport?.height||window.innerHeight,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
-    const gap=10,reserve=Math.min(88,Math.max(24,height*.15)),preferred=expanded?360:264,minimum=Math.min(264,Math.max(80,width-gap*2));
+    const safeTop=window.isNativeIOS?Math.max(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--android-status-bar-height'))||0,59):0;
+    const gap=10,minTop=top+safeTop+gap,reserve=Math.min(88,Math.max(24,height*.15)),preferred=expanded?360:264,minimum=Math.min(264,Math.max(80,width-gap*2));
     const bottom=top+height-reserve-gap;
-    const maxX=Math.max(left+gap,left+width-(drag?.width||minimum)-gap),maxY=Math.max(top+gap,bottom-(drag?.height||Math.min(150,height-reserve-gap*2)));
+    const maxX=Math.max(left+gap,left+width-(drag?.width||minimum)-gap),maxY=Math.max(minTop,bottom-(drag?.height||Math.min(150,height-reserve-safeTop-gap*2)));
     const x=Math.min(maxX,Math.max(left+gap,position?.x??left+width-Math.min(preferred,width-gap*2)-gap));
-    const y=Math.min(maxY,Math.max(top+gap,position?.y??top+gap));
+    const y=Math.min(maxY,Math.max(minTop,position?.y??minTop));
     // Grow/scroll inside the space below the user's anchor. Progress, language,
     // and expansion changes must not move the panel to a different location.
     position={x,y};

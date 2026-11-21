@@ -1639,7 +1639,7 @@ class BackdropSchemeHandler: NSObject, WKURLSchemeHandler {
 
 // MARK: - Full Cross-Platform PicShelf Backup & Restore Engine (.picshelf TAR + GZIP + Background + Checkpoints + Notifications)
 
-private enum BackupCRC32 {
+enum BackupCRC32 {
     private static let table: [UInt32] = {
         var t = [UInt32](repeating: 0, count: 256)
         for i in 0..<256 {
@@ -4647,7 +4647,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         let thumbLit = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
         let backupLit = PicShelfLocalMediaServer.shared.backupOrigin.map { "\"\($0)\"" } ?? "null"
         webView?.evaluateJavaScript(
-            "window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(origLit); window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbLit); window.__PICSHELF_IOS_BACKUP_ORIGIN = \(backupLit); if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
+            "window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(origLit); window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbLit); window.__PICSHELF_IOS_BACKUP_ORIGIN = \(backupLit); if (window.MediaShare && window.MediaShare.onResume) window.MediaShare.onResume(); if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
             completionHandler: nil
         )
     }
@@ -4943,6 +4943,56 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 getCurrentLocation: function(callbackId) { send('getCurrentLocation', { callbackId: callbackId }); },
                 sharePhoto: function(dataUrl, title) { send('sharePhoto', { dataUrl: dataUrl, title: title }); },
                 shareMultiplePhotos: function(photosJson, title) { send('shareMultiplePhotos', { photos: photosJson, title: title }); },
+                beginMediaShareStream: function(requestId, size) {
+                    iosStreamSeq++;
+                    var token = 'ios_sh_' + Date.now() + '_' + iosStreamSeq;
+                    send('beginMediaShareStream', { requestId: String(requestId || ''), token: token, size: Number(size || 0) });
+                    return token;
+                },
+                appendMediaShareStream: function(token, base64) {
+                    send('appendMediaShareStream', { token: String(token || ''), base64: String(base64 || '') });
+                    return true;
+                },
+                sealMediaShareStream: function(token) {
+                    send('sealMediaShareStream', { token: String(token || '') });
+                    return true;
+                },
+                discardMediaShareStream: function(token) {
+                    send('discardMediaShareStream', { token: String(token || '') });
+                },
+                cancelMediaShare: function(requestId) {
+                    send('cancelMediaShare', { requestId: String(requestId || '') });
+                },
+                shareMediaBatch: function(payloadJson) {
+                    send('shareMediaBatch', { payloadJson: typeof payloadJson === 'string' ? payloadJson : JSON.stringify(payloadJson || {}) });
+                },
+                getMediaShareFreeBytes: function() {
+                    try {
+                        var live = backupSyncRequest('GET', 'free-bytes', null);
+                        if (live !== null) {
+                            var parsed = JSON.parse(live);
+                            if (typeof parsed.app === 'number') return parsed.app;
+                        }
+                        var cached = window.__iosBackupFreeBytesJson ? JSON.parse(window.__iosBackupFreeBytesJson) : null;
+                        if (cached && typeof cached.app === 'number') return cached.app;
+                    } catch (_) {}
+                    return -1;
+                },
+                beginMediaShareArchive: function(requestId, total) {
+                    send('beginMediaShareArchive', { requestId: String(requestId || ''), total: Number(total || 0) });
+                    return true;
+                },
+                shareMediaArchiveBatch: function(payloadJson) {
+                    send('shareMediaArchiveBatch', { payloadJson: typeof payloadJson === 'string' ? payloadJson : JSON.stringify(payloadJson || {}) });
+                },
+                resumeMediaShare: function(requestId) {
+                    send('resumeMediaShare', { requestId: String(requestId || '') });
+                    return true;
+                },
+                reopenMediaShare: function(requestId) {
+                    send('reopenMediaShare', { requestId: String(requestId || '') });
+                    return true;
+                },
                 downloadPhoto: function(dataUrl, name) { send('downloadPhoto', { dataUrl: dataUrl, name: name }); },
                 executeDownloadBatch: function(batchJson) {
                     try {
@@ -5069,14 +5119,24 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: - WKNavigationDelegate
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        let safeTop = Int(view.safeAreaInsets.top > 0 ? view.safeAreaInsets.top : 47)
+    private func syncStatusBarSafeTopToWeb() {
+        let topInset = max(view.safeAreaInsets.top, view.window?.safeAreaInsets.top ?? 0)
+        let safeTop = Int(topInset > 0 ? ceil(topInset) : 59)
         let injectCss = """
         document.documentElement.classList.add('native-app-mode');
         document.body.classList.add('native-app-mode');
         document.documentElement.style.setProperty('--android-status-bar-height', '\(safeTop)px');
         """
-        webView.evaluateJavaScript(injectCss, completionHandler: nil)
+        webView?.evaluateJavaScript(injectCss, completionHandler: nil)
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        syncStatusBarSafeTopToWeb()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncStatusBarSafeTopToWeb()
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
