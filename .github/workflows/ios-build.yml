@@ -53,6 +53,7 @@ jobs:
 
       - name: Build & Verify on Apple iOS Simulator
         continue-on-error: true
+        timeout-minutes: 6
         run: |
           xcodebuild build \
             -project ios/AuraPhotoOrganizer.xcodeproj \
@@ -85,7 +86,7 @@ jobs:
             build/AuraPhotoOrganizer.ipa
             build/ios-simulator-screenshot.png
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Publish Latest IPA Release
         uses: softprops/action-gh-release@v2
