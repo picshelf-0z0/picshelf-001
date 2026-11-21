@@ -1653,7 +1653,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     func notifyAppInactive() {
         bridge.stopSensors()
         webView?.evaluateJavaScript(
-            "if (window.state && window.state.biometricLock) { window.state.isAppLocked = true; if (window.showAppLock) window.showAppLock(); }",
+            "(function(){ try { var v = document.getElementById('detailVideo'); if (v && !v.paused) { if (typeof silenceIosAudioForPause === 'function') silenceIosAudioForPause(v); v.pause(); } } catch(_){} if (window.state && window.state.biometricLock) { window.state.isAppLocked = true; if (window.showAppLock) window.showAppLock(); } })();",
             completionHandler: nil
         )
     }

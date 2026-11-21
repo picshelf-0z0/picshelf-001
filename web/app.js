@@ -14298,7 +14298,10 @@ function setupDetailVideo(photo, requested = {}) {
     window.PicShelfDetailVideoPreview?.capture(_currentVideoPhoto, vid);
   }
   // A new clip may share the same underlying movie. Browsing to it is not Play.
-  if (vid && changedVideo && photo.mediaType !== 'audio') vid.pause();
+  if (vid && changedVideo && photo.mediaType !== 'audio') {
+    silenceIosAudioForPause(vid);
+    vid.pause();
+  }
   _detailVideoPositionSession = null;
   clearVideoSkipFeedback();
   disposeStudioTrimThumbnails();
@@ -14561,8 +14564,10 @@ function setupDetailVideo(photo, requested = {}) {
         if (vid.currentTime >= clipEnd) {
           if (_trimLoopActive || (!isTrimToolActive && vid.loop)) {
             vid.currentTime = clipStart;
+            restoreIosAudioForPlay(vid, photo);
             vid.play().catch(() => {});
           } else {
+            silenceIosAudioForPause(vid);
             vid.pause();
             vid.currentTime = clipStart;
             syncDetailVideoPlaybackControls(vid);
@@ -14595,17 +14600,16 @@ function setupDetailVideo(photo, requested = {}) {
 
   vid.onplay = () => {
     if (!isCurrentSetup()) {
+      silenceIosAudioForPause(vid);
       vid.pause();
       return;
     }
     if (videoHasRemovedAudio(photo)) vid.muted = true;
+    restoreIosAudioForPlay(vid, photo);
     try {
       if ('preservesPitch' in vid) vid.preservesPitch = true;
       if ('webkitPreservesPitch' in vid) vid.webkitPreservesPitch = true;
     } catch (_) {}
-    if (window.isNativeIOS && _videoAudioCtx && _videoAudioCtx.state === 'suspended') {
-      _videoAudioCtx.resume().catch(() => {});
-    }
     vid.playbackRate = _videoSpeed;
     syncDetailVideoPlaybackControls(vid);
     if (typeof resetVideoFsInactivityTimer === 'function') {
@@ -14621,6 +14625,7 @@ function setupDetailVideo(photo, requested = {}) {
   };
 
   vid.onpause = () => {
+    silenceIosAudioForPause(vid);
     if (isCurrentSetup()) rememberDetailVideoPosition(true);
     // Pause events can arrive after playback has already resumed.
     syncDetailVideoPlaybackControls(vid);
@@ -14640,15 +14645,20 @@ function setupDetailVideo(photo, requested = {}) {
     }
     if (_trimLoopActive || (!isTrimToolActive && vid.loop)) {
       vid.currentTime = clipStart;
+      restoreIosAudioForPlay(vid, photo);
       vid.play().catch(() => {});
     } else {
+      silenceIosAudioForPause(vid);
       vid.currentTime = clipStart;
     }
     rememberDetailVideoPosition(true);
     syncDetailVideoPlaybackControls(vid);
   };
   _detailVideoPendingSetup = null;
-  if (pendingSetup.play) vid.play().catch(() => {});
+  if (pendingSetup.play) {
+    restoreIosAudioForPlay(vid, photo);
+    vid.play().catch(() => {});
+  }
   syncDetailVideoPlaybackControls(vid);
   window.PicShelfDetailVideoPreview?.ready(vid);
 }
@@ -14672,6 +14682,7 @@ function stopDetailVideo() {
     if (_currentVideoPhoto && _currentVideoPhoto.mediaType !== 'audio' && vid.getAttribute('src')) {
       _detailVideoNeedsReload = true;
     }
+    silenceIosAudioForPause(vid);
     vid.pause();
   }
   syncDetailVideoPlaybackControls(vid);
@@ -14716,6 +14727,7 @@ function toggleVideoPlay() {
       }
     }
 
+    restoreIosAudioForPlay(vid, photo);
     const playPromise = vid.play();
     if (playPromise !== undefined) {
       playPromise.catch((err) => {
@@ -14733,7 +14745,9 @@ function toggleVideoPlay() {
       });
     }
   } else {
+    silenceIosAudioForPause(vid);
     vid.pause();
+    syncDetailVideoPlaybackControls(vid);
   }
 }
 
@@ -14767,6 +14781,7 @@ function restartVideo() {
 
   // 1. Immediately pause to prevent race conditions during seek
   try {
+    silenceIosAudioForPause(vid);
     vid.pause();
   } catch (e) {}
 
@@ -14796,6 +14811,7 @@ function restartVideo() {
   const executePlay = () => {
     if (!isCurrentPlayback()) return;
     try {
+      restoreIosAudioForPlay(vid, photo);
       const p = vid.play();
       if (p !== undefined && typeof p.then === 'function') {
         p.then(() => {
@@ -14935,6 +14951,7 @@ function stepVideoFrame(deltaSeconds) {
   if (scrubberHandle) scrubberHandle.style.left = pct + '%';
 
   if (wasPlaying) {
+    restoreIosAudioForPlay(vid, photo);
     vid.play().catch(() => {});
   }
   syncDetailVideoPlaybackControls(vid);
@@ -14993,6 +15010,50 @@ let _videoGainNode = null;
 let _videoMediaSource = null;
 let _currentVolumePercent = 100;
 let _lastUnmutedVolumePercent = 100;
+let _iosPauseMuted = false;
+
+function silenceIosAudioForPause(vid) {
+  if (!window.isNativeIOS) return;
+  try {
+    if (_videoGainNode && _videoAudioCtx) {
+      const now = _videoAudioCtx.currentTime;
+      _videoGainNode.gain.cancelScheduledValues(now);
+      _videoGainNode.gain.setValueAtTime(0, now);
+    }
+    if (_videoAudioCtx && _videoAudioCtx.state === 'running') {
+      _videoAudioCtx.suspend().catch(() => {});
+    }
+  } catch (_) {}
+  if (vid) {
+    _iosPauseMuted = true;
+    vid.muted = true;
+  }
+}
+window.silenceIosAudioForPause = silenceIosAudioForPause;
+
+function restoreIosAudioForPlay(vid, photo) {
+  if (!window.isNativeIOS) return;
+  const targetPhoto = photo || _currentVideoPhoto;
+  const shouldMute = !!(videoHasRemovedAudio(targetPhoto) || _currentVolumePercent === 0);
+  _iosPauseMuted = false;
+  if (vid) {
+    vid.muted = shouldMute;
+  }
+  try {
+    if (!shouldMute && _currentVolumePercent !== 100 && !_videoGainNode && vid) {
+      setupVideoAudioGain(vid);
+    }
+    if (_videoGainNode && _videoAudioCtx) {
+      const now = _videoAudioCtx.currentTime;
+      const targetGain = shouldMute ? 0 : (_currentVolumePercent / 100);
+      _videoGainNode.gain.cancelScheduledValues(now);
+      _videoGainNode.gain.setValueAtTime(targetGain, now);
+    }
+    if (_videoAudioCtx && _videoAudioCtx.state === 'suspended' && !shouldMute) {
+      _videoAudioCtx.resume().catch(() => {});
+    }
+  } catch (_) {}
+}
 
 function setupVideoAudioGain(vid) {
   if (!vid) return null;
@@ -15002,10 +15063,16 @@ function setupVideoAudioGain(vid) {
     if (!AudioContextClass) return null;
     _videoAudioCtx = new AudioContextClass();
     _videoGainNode = _videoAudioCtx.createGain();
-    _videoGainNode.gain.value = _currentVolumePercent > 100 ? (_currentVolumePercent / 100) : 1.0;
+    const isPausedIos = !!(window.isNativeIOS && (vid.paused || vid.ended));
+    _videoGainNode.gain.value = (isPausedIos || _currentVolumePercent === 0)
+      ? 0
+      : (window.isNativeIOS ? (_currentVolumePercent / 100) : (_currentVolumePercent > 100 ? (_currentVolumePercent / 100) : 1.0));
     _videoMediaSource = _videoAudioCtx.createMediaElementSource(vid);
     _videoMediaSource.connect(_videoGainNode);
     _videoGainNode.connect(_videoAudioCtx.destination);
+    if (isPausedIos && _videoAudioCtx.state === 'running') {
+      _videoAudioCtx.suspend().catch(() => {});
+    }
   } catch (e) {
     console.warn('AudioContext boost setup note:', e);
   }
@@ -15086,7 +15153,9 @@ function setVideoVolume(percent, showNotification = true) {
   if (videoHasRemovedAudio(_currentVideoPhoto)) percent = 0;
   _currentVolumePercent = percent;
 
-  if (percent > 100) {
+  const isIosPaused = !!(window.isNativeIOS && (vid.paused || vid.ended));
+
+  if (!isIosPaused && percent > 100) {
     setupVideoAudioGain(vid);
     if (_videoAudioCtx && _videoAudioCtx.state === 'suspended') {
       _videoAudioCtx.resume().catch(() => {});
@@ -15094,9 +15163,26 @@ function setVideoVolume(percent, showNotification = true) {
   }
 
   if (percent === 0) {
+    _iosPauseMuted = false;
     vid.muted = true;
-    if (_videoGainNode) _videoGainNode.gain.value = 0;
+    if (_videoGainNode && _videoAudioCtx) {
+      _videoGainNode.gain.cancelScheduledValues(_videoAudioCtx.currentTime);
+      _videoGainNode.gain.setValueAtTime(0, _videoAudioCtx.currentTime);
+    } else if (_videoGainNode) {
+      _videoGainNode.gain.value = 0;
+    }
+  } else if (isIosPaused) {
+    // Keep iOS hardware + WebAudio silent while paused; exact volume restores on Play.
+    _lastUnmutedVolumePercent = percent;
+    _iosPauseMuted = true;
+    vid.muted = true;
+    if (_videoGainNode && _videoAudioCtx) {
+      _videoGainNode.gain.cancelScheduledValues(_videoAudioCtx.currentTime);
+      _videoGainNode.gain.setValueAtTime(0, _videoAudioCtx.currentTime);
+      if (_videoAudioCtx.state === 'running') _videoAudioCtx.suspend().catch(() => {});
+    }
   } else if (percent <= 100) {
+    _iosPauseMuted = false;
     vid.muted = false;
     vid.volume = percent / 100;
     if (window.isNativeIOS && percent < 100) {
@@ -15104,29 +15190,47 @@ function setVideoVolume(percent, showNotification = true) {
       if (_videoAudioCtx && _videoAudioCtx.state === 'suspended') {
         _videoAudioCtx.resume().catch(() => {});
       }
-      if (_videoGainNode) _videoGainNode.gain.value = percent / 100;
+      if (_videoGainNode && _videoAudioCtx) {
+        _videoGainNode.gain.cancelScheduledValues(_videoAudioCtx.currentTime);
+        _videoGainNode.gain.setValueAtTime(percent / 100, _videoAudioCtx.currentTime);
+      } else if (_videoGainNode) {
+        _videoGainNode.gain.value = percent / 100;
+      }
     } else if (_videoGainNode) {
       if (window.isNativeIOS && _videoAudioCtx && _videoAudioCtx.state === 'suspended') {
         _videoAudioCtx.resume().catch(() => {});
       }
-      _videoGainNode.gain.value = 1.0;
+      if (_videoAudioCtx) {
+        _videoGainNode.gain.cancelScheduledValues(_videoAudioCtx.currentTime);
+        _videoGainNode.gain.setValueAtTime(1.0, _videoAudioCtx.currentTime);
+      } else {
+        _videoGainNode.gain.value = 1.0;
+      }
     }
     _lastUnmutedVolumePercent = percent;
   } else {
     // 101% to 200% (Super Boost)
+    _iosPauseMuted = false;
     vid.muted = false;
     vid.volume = 1.0;
     setupVideoAudioGain(vid);
-    if (_videoGainNode) {
+    if (_videoAudioCtx && _videoAudioCtx.state === 'suspended') {
+      _videoAudioCtx.resume().catch(() => {});
+    }
+    if (_videoGainNode && _videoAudioCtx) {
+      _videoGainNode.gain.cancelScheduledValues(_videoAudioCtx.currentTime);
+      _videoGainNode.gain.setValueAtTime(percent / 100, _videoAudioCtx.currentTime);
+    } else if (_videoGainNode) {
       _videoGainNode.gain.value = percent / 100;
     }
     _lastUnmutedVolumePercent = percent;
   }
 
-  syncVolumeUI(percent, vid.muted);
+  const effectiveMuted = (percent === 0) || (vid.muted && !_iosPauseMuted);
+  syncVolumeUI(percent, effectiveMuted);
 
   if (showNotification) {
-    if (percent === 0 || vid.muted) {
+    if (effectiveMuted) {
       showToast('Volume: Muted 🔇');
     } else if (percent > 100) {
       showToast(`Volume: ${percent}% ⚡ (200% Boost enabled)`);
@@ -15139,7 +15243,8 @@ function setVideoVolume(percent, showNotification = true) {
 function toggleVideoMute() {
   const vid = document.getElementById('detailVideo');
   if (!vid) return;
-  if (vid.muted || _currentVolumePercent === 0) {
+  const isUserMuted = _currentVolumePercent === 0 || (vid.muted && !_iosPauseMuted);
+  if (isUserMuted) {
     const targetVol = _lastUnmutedVolumePercent > 0 ? _lastUnmutedVolumePercent : 100;
     setVideoVolume(targetVol);
   } else {
@@ -16003,6 +16108,7 @@ function initStudioTrimPanel() {
     if (_trimLoopActive && vid) {
       const sVal = parseFloat(startSlider?.value) || 0;
       vid.currentTime = sVal;
+      restoreIosAudioForPlay(vid, _currentVideoPhoto);
       vid.play().catch(() => {});
       showToast((window.t && window.t('trim_loop_active_toast')) || 'Looping trimmed segment 🔁');
     } else {
