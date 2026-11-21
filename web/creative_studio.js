@@ -253,8 +253,11 @@
       _cache: null
     },
 
-    // Smart Remove state (Picsart MI-GAN AI On-Demand + Exemplar Patch-Copy Fallback)
+    // Smart Remove state (Magic Eraser + Precision Eraser ✨ + Canva Click Object + Google Circle/Lasso + Camouflage)
     remove: {
+      engine: 'precision',  // 'standard' (Magic Eraser) | 'precision' (Precision Eraser ✨)
+      action: 'erase',      // 'erase' | 'camouflage'
+      tool: 'brush',        // 'brush' | 'tap' (Canva Click Object) | 'lasso' (Google Circle/Lasso)
       brushSize: 30,
       autoApply: false,
       maskCanvas: null,
@@ -262,8 +265,11 @@
       undoStack: [], // Array of canvas snapshots (max 6)
       painting: false,
       lastPt: null,
+      cursorPt: null,
+      lassoPoints: [],
       busy: false,
       activeReqId: null,
+      _pendingJob: null,
       pendingRunAfterDownload: false,
       modelStatus: { state: 'missing', downloaded: 0, total: 28079181, error: null }
     },
@@ -2274,7 +2280,10 @@
   }
 
   // ==========================================================================
-  // Smart Remove: Native Picsart MI-GAN 512 ONNX + Exemplar Patch-Copy Fallback
+  // Smart Remove: Magic Eraser (MI-GAN) + Precision Eraser ✨ (Focused High-Res
+  // ROI Neural + Slant-Aligned Horizon Guide + Coherent PatchMatch Texture HD +
+  // Automatic Cast-Shadow & Halo Absorption) + Canva Click Object + Circle/Lasso
+  // + Google Photos Camouflage Mode
   // ==========================================================================
   function hasNativeObjectRemove() {
     try {
@@ -2290,6 +2299,35 @@
         const parsed = JSON.parse(window.AndroidApp.objectRemoveModelStatus() || '{}');
         if (parsed && parsed.state) cs.remove.modelStatus = parsed;
       } catch (_) {}
+    }
+    updateRemoveAiBar();
+  }
+
+  function syncRemoveModeUI() {
+    const isCamo = cs.remove.action === 'camouflage';
+    const isPrecision = cs.remove.engine === 'precision' && !isCamo;
+    const isStandard = cs.remove.engine === 'standard' && !isCamo;
+    document.getElementById('creativeRemoveEngineStandardBtn')?.classList.toggle('active', isStandard);
+    document.getElementById('creativeRemoveEnginePrecisionBtn')?.classList.toggle('active', isPrecision);
+    document.getElementById('creativeRemoveCamouflageBtn')?.classList.toggle('active', isCamo);
+
+    document.querySelectorAll('#creativeRemoveToolSubnav [data-rm-tool]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.rmTool === cs.remove.tool);
+    });
+    const autoBtn = document.getElementById('creativeRemoveAutoBtn');
+    if (autoBtn) {
+      autoBtn.classList.toggle('active', !!cs.remove.autoApply);
+      autoBtn.innerHTML = `<i class="fa-solid fa-bolt"></i> Instant: ${cs.remove.autoApply ? 'On' : 'Off'}`;
+    }
+    const applyBtn = document.getElementById('creativeRemoveApplyBtn');
+    if (applyBtn) {
+      if (isCamo) {
+        applyBtn.innerHTML = '<i class="fa-solid fa-eye-low-vision"></i> Camouflage';
+      } else if (cs.remove.engine === 'precision') {
+        applyBtn.innerHTML = '<i class="fa-solid fa-sparkles"></i> Precision Erase';
+      } else {
+        applyBtn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Remove';
+      }
     }
     updateRemoveAiBar();
   }
@@ -2311,14 +2349,30 @@
 
     if (cs.remove.busy) {
       statusEl.classList.add('busy');
-      statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> AI removing object cleanly…';
+      const modeName = cs.remove.action === 'camouflage'
+        ? 'Camouflaging object tones…'
+        : (cs.remove.engine === 'precision' ? 'Precision Eraser reconstructing HD texture…' : 'Magic Eraser removing object…');
+      statusEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${modeName}`;
+      if (dlBtn) dlBtn.style.display = 'none';
+      if (progWrap) progWrap.style.display = 'none';
+      return;
+    }
+
+    const toolHint = cs.remove.tool === 'tap'
+      ? 'Tap any object to auto-select'
+      : (cs.remove.tool === 'lasso' ? 'Circle around object to select' : 'Brush over object');
+
+    if (cs.remove.action === 'camouflage') {
+      statusEl.classList.add('ready');
+      statusEl.innerHTML = `<i class="fa-solid fa-eye-low-vision"></i> Camouflage Mode · ${toolHint}`;
       if (dlBtn) dlBtn.style.display = 'none';
       if (progWrap) progWrap.style.display = 'none';
       return;
     }
 
     if (!nativeOk) {
-      statusEl.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Brush object, then tap Remove';
+      statusEl.classList.add('ready');
+      statusEl.innerHTML = `<i class="fa-solid fa-sparkles"></i> ${cs.remove.engine === 'precision' ? 'Precision Eraser HD' : 'Magic Eraser'} · ${toolHint}`;
       if (dlBtn) dlBtn.style.display = 'none';
       if (progWrap) progWrap.style.display = 'none';
       return;
@@ -2326,7 +2380,9 @@
 
     if (st.state === 'ready') {
       statusEl.classList.add('ready');
-      statusEl.innerHTML = '<i class="fa-solid fa-circle-check"></i> AI Object Removal Ready (MI-GAN)';
+      statusEl.innerHTML = cs.remove.engine === 'precision'
+        ? `<i class="fa-solid fa-circle-check"></i> Precision Eraser Ready (AI + HD Texture) · ${toolHint}`
+        : `<i class="fa-solid fa-circle-check"></i> Magic Eraser Ready (MI-GAN AI) · ${toolHint}`;
       if (dlBtn) dlBtn.style.display = 'none';
       if (progWrap) progWrap.style.display = 'none';
     } else if (st.state === 'downloading') {
@@ -2343,7 +2399,7 @@
     } else {
       statusEl.innerHTML = st.state === 'error'
         ? '<i class="fa-solid fa-triangle-exclamation"></i> AI download paused — tap to retry'
-        : '<i class="fa-solid fa-wand-magic-sparkles"></i> Paint object &amp; tap Remove (AI 28 MB)';
+        : `<i class="fa-solid fa-sparkles"></i> ${cs.remove.engine === 'precision' ? 'Precision Eraser' : 'Magic Eraser'} · ${toolHint}`;
       if (dlBtn) {
         dlBtn.style.display = 'inline-flex';
         dlBtn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Download AI (28 MB)';
@@ -2352,14 +2408,1141 @@
     }
   }
 
+  // Helper: Draw a binary Uint8Array(w*h) mask onto cs.remove.maskCanvas in glowing Magic Eraser coral-red
+  function addBinaryMaskToRemoveCanvas(binMask, w, h) {
+    if (!cs.remove.maskCanvas) return 0;
+    const mc = cs.remove.maskCanvas;
+    const mctx = mc.getContext('2d', { willReadFrequently: true });
+    const imgData = mctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    let added = 0;
+    for (let i = 0, n = w * h; i < n; i++) {
+      if (binMask[i]) {
+        const o = i * 4;
+        d[o] = 239; d[o + 1] = 68; d[o + 2] = 68; d[o + 3] = 255;
+        added++;
+      }
+    }
+    if (added > 0) {
+      mctx.putImageData(imgData, 0, 0);
+      cs.remove.hasMask = true;
+    }
+    return added;
+  }
+
+  // Fast 2D Separable Binary Dilation (radius r) on Uint8Array(w*h)
+  function dilateBinaryMask(mask, w, h, r) {
+    if (r <= 0) return new Uint8Array(mask);
+    const horiz = new Uint8Array(w * h);
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      let last = -9999;
+      for (let x = 0; x < w; x++) {
+        if (mask[row + x]) last = x;
+        if (x - last <= r) horiz[row + x] = 1;
+      }
+      last = 999999;
+      for (let x = w - 1; x >= 0; x--) {
+        if (mask[row + x]) last = x;
+        if (last - x <= r) horiz[row + x] = 1;
+      }
+    }
+    const r2 = r * r;
+    for (let y = 0; y < h; y++) {
+      const dy0 = Math.max(0, y - r), dy1 = Math.min(h - 1, y + r);
+      for (let x = 0; x < w; x++) {
+        let hit = 0;
+        for (let ny = dy0; ny <= dy1; ny++) {
+          if (horiz[ny * w + x]) { hit = 1; break; }
+        }
+        out[y * w + x] = hit;
+      }
+    }
+    return out;
+  }
+
+  // Fast 2D Exterior Flood-Fill to close all enclosed interior holes (logos, text, icons, stripes) inside [x0..x1, y0..y1]
+  function fillEnclosedMaskHoles(mask, w, h, x0, y0, x1, y1) {
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (bw <= 2 || bh <= 2) return;
+    const ext = new Uint8Array(bw * bh);
+    const q = new Int32Array(bw * bh);
+    let head = 0, tail = 0;
+    const pushIfExt = (lx, ly) => {
+      const idx = ly * bw + lx;
+      if (ext[idx] || mask[(y0 + ly) * w + (x0 + lx)]) return;
+      ext[idx] = 1;
+      q[tail++] = idx;
+    };
+    for (let lx = 0; lx < bw; lx++) { pushIfExt(lx, 0); pushIfExt(lx, bh - 1); }
+    for (let ly = 0; ly < bh; ly++) { pushIfExt(0, ly); pushIfExt(bw - 1, ly); }
+    while (head < tail) {
+      const cur = q[head++];
+      const ly = (cur / bw) | 0, lx = cur - ly * bw;
+      if (lx > 0) pushIfExt(lx - 1, ly);
+      if (lx + 1 < bw) pushIfExt(lx + 1, ly);
+      if (ly > 0) pushIfExt(lx, ly - 1);
+      if (ly + 1 < bh) pushIfExt(lx, ly + 1);
+    }
+    for (let ly = 1; ly < bh - 1; ly++) {
+      for (let lx = 1; lx < bw - 1; lx++) {
+        if (!ext[ly * bw + lx]) mask[(y0 + ly) * w + (x0 + lx)] = 1;
+      }
+    }
+  }
+
+  // Detect & absorb attached dark cast shadow on the ground adjacent to the lower half of an object component
+  function absorbAttachedCastShadow(mask, px, w, h, cMinX, cMinY, cMaxX, cMaxY) {
+    const objW = cMaxX - cMinX + 1, objH = cMaxY - cMinY + 1;
+    if (objW < 8 || objH < 8) return;
+    const reachX = clamp(Math.round(objW * 1.48), 28, 220);
+    const reachY = clamp(Math.round(objH * 0.30), 10, 56);
+    const sx0 = Math.max(0, cMinX - reachX), sx1 = Math.min(w - 1, cMaxX + reachX);
+    const sy0 = Math.max(0, Math.round(cMinY + objH * 0.34)), sy1 = Math.min(h - 1, cMaxY + reachY);
+
+    // Measure clean sunlit ground color around the base perimeter outside the object
+    let gR = 0, gG = 0, gB = 0, gLumSum = 0, gCnt = 0;
+    const ringOuter = dilateBinaryMask(mask, w, h, 28);
+    const ringInner = dilateBinaryMask(mask, w, h, 8);
+    const lums = [];
+    for (let y = sy0; y <= sy1; y += 2) {
+      for (let x = sx0; x <= sx1; x += 2) {
+        const i = y * w + x;
+        if (ringOuter[i] && !ringInner[i]) {
+          const o = i * 4;
+          const lum = 0.299 * px[o] + 0.587 * px[o + 1] + 0.114 * px[o + 2];
+          lums.push([lum, px[o], px[o + 1], px[o + 2]]);
+        }
+      }
+    }
+    if (lums.length < 10) return;
+    // Use the upper 60% of surrounding ground samples so existing shadow pixels don't skew the sunlit ground baseline
+    lums.sort((a, b) => b[0] - a[0]);
+    const keepN = Math.max(6, Math.round(lums.length * 0.6));
+    for (let k = 0; k < keepN; k++) {
+      gLumSum += lums[k][0]; gR += lums[k][1]; gG += lums[k][2]; gB += lums[k][3]; gCnt++;
+    }
+    const bgLum = gLumSum / gCnt;
+    if (bgLum < 68) return; // Scene itself is dark; skip shadow heuristic
+    const bgR = gR / gCnt, bgG = gG / gCnt, bgB = gB / gCnt;
+
+    // BFS grow connected dark cast-shadow pixels directly attached to the lower half of the object mask
+    const sw = sx1 - sx0 + 1, sh = sy1 - sy0 + 1;
+    const q = new Int32Array(sw * sh);
+    let head = 0, tail = 0;
+    for (let y = sy0; y <= sy1; y++) {
+      for (let x = sx0; x <= sx1; x++) {
+        if (mask[y * w + x]) q[tail++] = y * w + x;
+      }
+    }
+    const maxShadowPixels = Math.round(objW * objH * 1.25);
+    let addedShadow = 0;
+    while (head < tail && addedShadow < maxShadowPixels) {
+      const cur = q[head++];
+      const cy = (cur / w) | 0, cx = cur - cy * w;
+      const nbrs = [
+        [cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]
+      ];
+      for (let k = 0; k < 4; k++) {
+        const nx = nbrs[k][0], ny = nbrs[k][1];
+        if (nx < sx0 || nx > sx1 || ny < sy0 || ny > sy1) continue;
+        const ni = ny * w + nx;
+        if (mask[ni]) continue;
+        const o = ni * 4;
+        const r = px[o], g = px[o + 1], b = px[o + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        // Shadow criteria: significantly darker than sunlit ground (lum < bgLum * 0.72) and non-saturated dark cast
+        if (lum < bgLum * 0.72 && (bgLum - lum) > 30) {
+          const ratioR = r / Math.max(15, bgR), ratioG = g / Math.max(15, bgG), ratioB = b / Math.max(15, bgB);
+          if (ratioR < 0.78 && ratioG < 0.80 && Math.abs(ratioR - ratioG) < 0.28) {
+            mask[ni] = 1;
+            addedShadow++;
+            q[tail++] = ni;
+          }
+        }
+      }
+    }
+  }
+
+  // Canva Magic Eraser "Click Object" Auto-Segmentation:
+  // 1) Grows clicked seed region, 2) Models surrounding background ring to capture multi-part objects
+  // (like white stripes on traffic cones, lids/sleeves on cups, lid handles/wheels/logos on bins, text on signs),
+  // 3) Fills interior holes, absorbs color-coherent rims & attached ground shadow!
+  function autoSelectObjectAtPoint(nx, ny) {
+    if (!cs.workCanvas || !cs.remove.maskCanvas) return false;
+    const w = cs.workCanvas.width, h = cs.workCanvas.height;
+    const cx = clamp(Math.round(nx * w), 0, w - 1);
+    const cy = clamp(Math.round(ny * h), 0, h - 1);
+    const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+    const px = wCtx.getImageData(0, 0, w, h).data;
+
+    // Sample 5x5 seed color at tap point
+    let sr = 0, sg = 0, sb = 0, sc = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = clamp(cx + dx, 0, w - 1), y = clamp(cy + dy, 0, h - 1);
+        const o = (y * w + x) * 4;
+        sr += px[o]; sg += px[o + 1]; sb += px[o + 2]; sc++;
+      }
+    }
+    sr /= sc; sg /= sc; sb /= sc;
+
+    // Phase 1: Connected-component seed region growth (with same-color stripe/crease bridging up to 18px!)
+    const maxR = Math.round(Math.min(w, h) * 0.34);
+    const x0 = Math.max(0, cx - maxR), x1 = Math.min(w - 1, cx + maxR);
+    const y0 = Math.max(0, cy - maxR), y1 = Math.min(h - 1, cy + maxR);
+    const mask = new Uint8Array(w * h);
+    const visited = new Uint8Array(w * h);
+    const q = new Int32Array((x1 - x0 + 1) * (y1 - y0 + 1));
+    let head = 0, tail = 0;
+    const startIdx = cy * w + cx;
+    mask[startIdx] = 1;
+    visited[startIdx] = 1;
+    q[tail++] = startIdx;
+
+    let bMinX = cx, bMaxX = cx, bMinY = cy, bMaxY = cy, seedCount = 1;
+    const maxSeedArea = Math.round(w * h * 0.24);
+    // 4-connected neighbors + vertical/horizontal gap-bridging jumps (jumps across 6-38px stripes/creases of the same object!)
+    const stepOffsets = [
+      [-1, 0, false], [1, 0, false], [0, -1, false], [0, 1, false],
+      [0, -7, true],  [0, 7, true],  [0, -14, true], [0, 14, true],
+      [0, -22, true], [0, 22, true], [0, -30, true], [0, 30, true], [0, -38, true], [0, 38, true],
+      [-7, 0, true],  [7, 0, true],  [-14, 0, true], [14, 0, true]
+    ];
+
+    while (head < tail && seedCount < maxSeedArea) {
+      const cur = q[head++];
+      const py = (cur / w) | 0, pxX = cur - py * w;
+      if (pxX < bMinX) bMinX = pxX; if (pxX > bMaxX) bMaxX = pxX;
+      if (py < bMinY) bMinY = py; if (py > bMaxY) bMaxY = py;
+      const co = cur * 4;
+      const cr = px[co], cg = px[co + 1], cb = px[co + 2];
+
+      for (let k = 0; k < stepOffsets.length; k++) {
+        const dx = stepOffsets[k][0], dy = stepOffsets[k][1], isJump = stepOffsets[k][2];
+        const ux = pxX + dx, uy = py + dy;
+        if (ux < x0 || ux > x1 || uy < y0 || uy > y1) continue;
+        const ni = uy * w + ux;
+        if (visited[ni]) continue;
+        const no = ni * 4;
+        const nr = px[no], ng = px[no + 1], nb = px[no + 2];
+        const dSeed = Math.hypot(nr - sr, ng - sg, nb - sb);
+        const dStep = Math.hypot(nr - cr, ng - cg, nb - cb);
+        if (!isJump) {
+          visited[ni] = 1;
+          if (dSeed < 66 && dStep < 28) {
+            mask[ni] = 1;
+            seedCount++;
+            q[tail++] = ni;
+          }
+        } else if (dSeed < 52 && dStep < 36) {
+          // Jump across a stripe/crease if the destination closely matches the tapped seed color
+          visited[ni] = 1;
+          mask[ni] = 1;
+          seedCount++;
+          q[tail++] = ni;
+          // Fill the straight segment between (pxX, py) and (ux, uy) so the stripe between two same-color bands is bridged!
+          const steps = Math.max(Math.abs(dx), Math.abs(dy));
+          for (let s = 1; s < steps; s += 2) {
+            const bx = pxX + Math.round((dx * s) / steps);
+            const by = py + Math.round((dy * s) / steps);
+            mask[by * w + bx] = 1;
+          }
+        }
+      }
+    }
+
+    // Phase 2: Tightly bounded multi-part object completion (fills white cone stripes, cup lids/sleeves, wheels)
+    // without leaking horizontally into sunlit grass or distant background bands!
+    const bw = Math.max(12, bMaxX - bMinX + 1);
+    const bh = Math.max(16, bMaxY - bMinY + 1);
+    const bgPadX = clamp(Math.round(bw * 0.55), 24, 120);
+    const bgPadY = clamp(Math.round(bh * 0.55), 24, 140);
+    const wx0 = Math.max(0, bMinX - bgPadX), wx1 = Math.min(w - 1, bMaxX + bgPadX);
+    const wy0 = Math.max(0, bMinY - bgPadY), wy1 = Math.min(h - 1, bMaxY + bgPadY);
+
+    const bgSamples = [];
+    const sampleStep = Math.max(3, Math.round(Math.max(wx1 - wx0, wy1 - wy0) / 24));
+    const pushBg = (sx, sy) => {
+      const si = sy * w + sx;
+      if (mask[si]) return;
+      const o = si * 4;
+      const r = px[o], g = px[o + 1], b = px[o + 2];
+      if (Math.hypot(r - sr, g - sg, b - sb) < 38) return;
+      bgSamples.push([r, g, b]);
+    };
+    for (let sx = wx0; sx <= wx1; sx += sampleStep) { pushBg(sx, wy0); pushBg(sx, wy1); }
+    for (let sy = wy0; sy <= wy1; sy += sampleStep) { pushBg(wx0, sy); pushBg(wx1, sy); }
+    // Also sample a closer ring 14px outside [bMinX..bMaxX, bMinY..bMaxY] to capture local sunlit/shaded background
+    const closeX0 = Math.max(0, bMinX - 14), closeX1 = Math.min(w - 1, bMaxX + 14);
+    const closeY0 = Math.max(0, bMinY - 14), closeY1 = Math.min(h - 1, bMaxY + 14);
+    for (let sx = closeX0; sx <= closeX1; sx += sampleStep) { pushBg(sx, closeY0); pushBg(sx, closeY1); }
+    for (let sy = closeY0; sy <= closeY1; sy += sampleStep) { pushBg(closeX0, sy); pushBg(closeX1, sy); }
+
+    const seedIsFoliage = (sg > sr + 8 && sg > sb + 18);
+
+    if (bgSamples.length >= 6) {
+      const distBg = (r, g, b) => {
+        // Reject obvious green grass/foliage when the tapped object itself is not green!
+        if (!seedIsFoliage && g > r + 6 && g > b + 18) return 0;
+        let minD = 999;
+        for (let k = 0; k < bgSamples.length; k++) {
+          const s = bgSamples[k];
+          const d = Math.hypot(r - s[0], g - s[1], b - s[2]);
+          if (d < minD) minD = d;
+        }
+        return minD;
+      };
+      // Keep horizontal expansion tight to Phase 1 width (+18%) while allowing vertical completion (+55%) for cup lids/sleeves
+      const cx0 = Math.max(0, bMinX - Math.max(6, Math.round(bw * 0.18)));
+      const cx1 = Math.min(w - 1, bMaxX + Math.max(6, Math.round(bw * 0.18)));
+      const cy0 = Math.max(0, bMinY - Math.max(14, Math.round(bh * 0.55)));
+      const cy1 = Math.min(h - 1, bMaxY + Math.max(14, Math.round(bh * 0.55)));
+      const q2 = new Int32Array((cx1 - cx0 + 1) * (cy1 - cy0 + 1));
+      let h2 = 0, t2 = 0;
+      for (let y = bMinY; y <= bMaxY; y++) {
+        for (let x = bMinX; x <= bMaxX; x++) {
+          if (mask[y * w + x]) q2[t2++] = y * w + x;
+        }
+      }
+      while (h2 < t2) {
+        const cur = q2[h2++];
+        const py = (cur / w) | 0, pxX = cur - py * w;
+        if (pxX < bMinX) bMinX = pxX; if (pxX > bMaxX) bMaxX = pxX;
+        if (py < bMinY) bMinY = py; if (py > bMaxY) bMaxY = py;
+        const nbrs = [[pxX - 1, py], [pxX + 1, py], [pxX, py - 1], [pxX, py + 1]];
+        for (let k = 0; k < 4; k++) {
+          const ux = nbrs[k][0], uy = nbrs[k][1];
+          if (ux < cx0 || ux > cx1 || uy < cy0 || uy > cy1) continue;
+          const ni = uy * w + ux;
+          if (mask[ni]) continue;
+          const no = ni * 4;
+          const r = px[no], g = px[no + 1], b = px[no + 2];
+          if (distBg(r, g, b) > 35) {
+            mask[ni] = 1;
+            q2[t2++] = ni;
+          }
+        }
+      }
+    }
+
+    // Phase 3: Fill interior enclosed details (logos, letters, icons), absorb attached cast shadow & dilate by 5px
+    fillEnclosedMaskHoles(mask, w, h, Math.max(0, bMinX - 3), Math.max(0, bMinY - 3), Math.min(w - 1, bMaxX + 3), Math.min(h - 1, bMaxY + 3));
+    if (cs.remove.action === 'erase') {
+      absorbAttachedCastShadow(mask, px, w, h, bMinX, bMinY, bMaxX, bMaxY);
+    }
+    const finalMask = dilateBinaryMask(mask, w, h, 5);
+    const added = addBinaryMaskToRemoveCanvas(finalMask, w, h);
+    scheduleRender();
+    return added > 0;
+  }
+
+  // Google Photos Magic Eraser Circle / Lasso Selection:
+  // Closes the user's drawn loop, snaps tightly to any distinct foreground object + cast shadow inside the loop,
+  // or fills the full circled region if uniform.
+  function finalizeLassoSelection() {
+    const pts = cs.remove.lassoPoints || [];
+    cs.remove.lassoPoints = [];
+    if (!cs.workCanvas || !cs.remove.maskCanvas || pts.length === 0) return false;
+    let pathLen = 0;
+    for (let i = 1; i < pts.length; i++) {
+      pathLen += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    }
+    // If user just tapped without drawing a loop, run Click Object auto-selection!
+    if (pts.length < 4 || pathLen < 0.035) {
+      return autoSelectObjectAtPoint(pts[0][0], pts[0][1]);
+    }
+
+    const w = cs.workCanvas.width, h = cs.workCanvas.height;
+    const tmpC = document.createElement('canvas');
+    tmpC.width = w; tmpC.height = h;
+    const tctx = tmpC.getContext('2d');
+    tctx.fillStyle = '#ffffff';
+    tctx.beginPath();
+    tctx.moveTo(pts[0][0] * w, pts[0][1] * h);
+    for (let i = 1; i < pts.length; i++) tctx.lineTo(pts[i][0] * w, pts[i][1] * h);
+    tctx.closePath();
+    tctx.fill();
+    const polyData = tctx.getImageData(0, 0, w, h).data;
+
+    const polyMask = new Uint8Array(w * h);
+    let minX = w, minY = h, maxX = -1, maxY = -1, polyArea = 0;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (polyData[(row + x) * 4 + 3] > 64) {
+          polyMask[row + x] = 1;
+          polyArea++;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (polyArea < 12) return autoSelectObjectAtPoint(pts[0][0], pts[0][1]);
+
+    // Sample background perimeter ring just outside the user's loop to snap to the object inside the loop!
+    const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+    const px = wCtx.getImageData(0, 0, w, h).data;
+    const outerRing = dilateBinaryMask(polyMask, w, h, 14);
+    const innerRing = dilateBinaryMask(polyMask, w, h, 3);
+    const bgSamples = [];
+    const step = Math.max(2, Math.round(Math.sqrt(polyArea) / 14));
+    for (let y = Math.max(0, minY - 14); y <= Math.min(h - 1, maxY + 14); y += step) {
+      for (let x = Math.max(0, minX - 14); x <= Math.min(w - 1, maxX + 14); x += step) {
+        const i = y * w + x;
+        if (outerRing[i] && !innerRing[i]) {
+          const o = i * 4;
+          bgSamples.push([px[o], px[o + 1], px[o + 2]]);
+        }
+      }
+    }
+
+    let chosenMask = polyMask;
+    if (bgSamples.length >= 8) {
+      const snapped = new Uint8Array(w * h);
+      let fgCount = 0, sMinX = w, sMinY = h, sMaxX = -1, sMaxY = -1;
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const i = y * w + x;
+          if (!polyMask[i]) continue;
+          const o = i * 4;
+          const r = px[o], g = px[o + 1], b = px[o + 2];
+          let minD = 999;
+          for (let k = 0; k < bgSamples.length; k++) {
+            const s = bgSamples[k];
+            const d = Math.hypot(r - s[0], g - s[1], b - s[2]);
+            if (d < minD) minD = d;
+          }
+          if (minD > 30) {
+            snapped[i] = 1;
+            fgCount++;
+            if (x < sMinX) sMinX = x; if (x > sMaxX) sMaxX = x;
+            if (y < sMinY) sMinY = y; if (y > sMaxY) sMaxY = y;
+          }
+        }
+      }
+      if (fgCount >= polyArea * 0.10 && fgCount <= polyArea * 0.88 && sMaxX >= sMinX) {
+        fillEnclosedMaskHoles(snapped, w, h, Math.max(0, sMinX - 2), Math.max(0, sMinY - 2), Math.min(w - 1, sMaxX + 2), Math.min(h - 1, sMaxY + 2));
+        if (cs.remove.action === 'erase') {
+          absorbAttachedCastShadow(snapped, px, w, h, sMinX, sMinY, sMaxX, sMaxY);
+        }
+        chosenMask = dilateBinaryMask(snapped, w, h, 5);
+      }
+    }
+
+    const added = addBinaryMaskToRemoveCanvas(chosenMask, w, h);
+    scheduleRender();
+    return added > 0;
+  }
+
+  // Prepare & refine mask into separate Connected Component Clusters with:
+  // 1) Automatic unbrushed object fringe absorption,
+  // 2) Automatic attached ground cast-shadow absorption (in Precision Eraser),
+  // 3) Safety margin dilation so zero object edge halos ever bleed into inpainting!
+  function prepareRemovalClusters(w, h, px, rawMaskData, isPrecision, isCamouflage) {
+    const baseMask = new Uint8Array(w * h);
+    let any = false;
+    for (let i = 0, n = w * h; i < n; i++) {
+      if (rawMaskData[i * 4 + 3] > 20) {
+        baseMask[i] = 1;
+        any = true;
+      }
+    }
+    if (!any) return [];
+
+    // Find raw connected components first
+    const labels = new Int32Array(w * h);
+    const rawComps = [];
+    const q = new Int32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const start = y * w + x;
+        if (!baseMask[start] || labels[start]) continue;
+        const cid = rawComps.length + 1;
+        let head = 0, tail = 0;
+        labels[start] = cid;
+        q[tail++] = start;
+        let minX = x, maxX = x, minY = y, maxY = y;
+        while (head < tail) {
+          const cur = q[head++];
+          const cy = (cur / w) | 0, cx = cur - cy * w;
+          if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+          if (cx > 0 && baseMask[cur - 1] && !labels[cur - 1]) { labels[cur - 1] = cid; q[tail++] = cur - 1; }
+          if (cx + 1 < w && baseMask[cur + 1] && !labels[cur + 1]) { labels[cur + 1] = cid; q[tail++] = cur + 1; }
+          if (cy > 0 && baseMask[cur - w] && !labels[cur - w]) { labels[cur - w] = cid; q[tail++] = cur - w; }
+          if (cy + 1 < h && baseMask[cur + w] && !labels[cur + w]) { labels[cur + w] = cid; q[tail++] = cur + w; }
+        }
+        rawComps.push({ minX, minY, maxX, maxY });
+      }
+    }
+
+    // Merge nearby components within 42px
+    const clusters = [];
+    const used = new Uint8Array(rawComps.length);
+    for (let i = 0; i < rawComps.length; i++) {
+      if (used[i]) continue;
+      used[i] = 1;
+      const box = { ...rawComps[i] };
+      let merged = true;
+      while (merged) {
+        merged = false;
+        for (let j = 0; j < rawComps.length; j++) {
+          if (used[j]) continue;
+          const b = rawComps[j];
+          if (b.minX <= box.maxX + 42 && b.maxX >= box.minX - 42 &&
+              b.minY <= box.maxY + 42 && b.maxY >= box.minY - 42) {
+            box.minX = Math.min(box.minX, b.minX);
+            box.minY = Math.min(box.minY, b.minY);
+            box.maxX = Math.max(box.maxX, b.maxX);
+            box.maxY = Math.max(box.maxY, b.maxY);
+            used[j] = 1;
+            merged = true;
+          }
+        }
+      }
+      clusters.push(box);
+    }
+
+    // Refine each cluster independently
+    const outClusters = [];
+    for (const c of clusters) {
+      const cMask = new Uint8Array(w * h);
+      for (let y = c.minY; y <= c.maxY; y++) {
+        for (let x = c.minX; x <= c.maxX; x++) {
+          if (baseMask[y * w + x]) cMask[y * w + x] = 1;
+        }
+      }
+      fillEnclosedMaskHoles(cMask, w, h, Math.max(0, c.minX - 2), Math.max(0, c.minY - 2), Math.min(w - 1, c.maxX + 2), Math.min(h - 1, c.maxY + 2));
+
+      if (isPrecision && !isCamouflage) {
+        // 1. Absorb unbrushed object fringe pixels (1..10px outside user brush) whose color matches object vs background
+        const ringBgOut = dilateBinaryMask(cMask, w, h, 26);
+        const ringBgIn  = dilateBinaryMask(cMask, w, h, 11);
+        const fringeSearch = dilateBinaryMask(cMask, w, h, 10);
+        const bgCols = [], objCols = [];
+        const step = Math.max(2, Math.round(Math.max(c.maxX - c.minX, c.maxY - c.minY) / 18));
+        for (let y = Math.max(0, c.minY - 26); y <= Math.min(h - 1, c.maxY + 26); y += step) {
+          for (let x = Math.max(0, c.minX - 26); x <= Math.min(w - 1, c.maxX + 26); x += step) {
+            const i = y * w + x;
+            const o = i * 4;
+            if (ringBgOut[i] && !ringBgIn[i]) bgCols.push([px[o], px[o + 1], px[o + 2]]);
+            else if (cMask[i]) objCols.push([px[o], px[o + 1], px[o + 2]]);
+          }
+        }
+        if (bgCols.length >= 6 && objCols.length >= 4) {
+          for (let y = Math.max(0, c.minY - 10); y <= Math.min(h - 1, c.maxY + 10); y++) {
+            for (let x = Math.max(0, c.minX - 10); x <= Math.min(w - 1, c.maxX + 10); x++) {
+              const i = y * w + x;
+              if (cMask[i] || !fringeSearch[i]) continue;
+              const o = i * 4;
+              const r = px[o], g = px[o + 1], b = px[o + 2];
+              let dBg = 999, dObj = 999;
+              for (let k = 0; k < bgCols.length; k++) {
+                const d = Math.hypot(r - bgCols[k][0], g - bgCols[k][1], b - bgCols[k][2]);
+                if (d < dBg) dBg = d;
+              }
+              for (let k = 0; k < objCols.length; k++) {
+                const d = Math.hypot(r - objCols[k][0], g - objCols[k][1], b - objCols[k][2]);
+                if (d < dObj) dObj = d;
+              }
+              if (dBg > 30 && dObj < dBg * 0.80) {
+                cMask[i] = 1;
+              }
+            }
+          }
+        }
+        // 2. Absorb attached dark ground shadow next to the lower half of the object!
+        absorbAttachedCastShadow(cMask, px, w, h, c.minX, c.minY, c.maxX, c.maxY);
+      }
+
+      // 3. Safety margin dilation so zero anti-aliased edge rims survive outside the hole
+      const dilateR = isCamouflage ? 2 : (isPrecision ? 8 : 5);
+      const dilated = dilateBinaryMask(cMask, w, h, dilateR);
+
+      // Recompute exact bounding box of dilated mask
+      let dMinX = w, dMinY = h, dMaxX = -1, dMaxY = -1;
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+          if (dilated[row + x]) {
+            if (x < dMinX) dMinX = x; if (x > dMaxX) dMaxX = x;
+            if (y < dMinY) dMinY = y; if (y > dMaxY) dMaxY = y;
+          }
+        }
+      }
+      if (dMaxX >= dMinX && dMaxY >= dMinY) {
+        const cw = dMaxX - dMinX + 1, ch = dMaxY - dMinY + 1;
+        const pad = clamp(Math.round(Math.max(cw, ch) * 0.92), 68, 240);
+        const rx0 = Math.max(0, dMinX - pad), ry0 = Math.max(0, dMinY - pad);
+        const rx1 = Math.min(w - 1, dMaxX + pad), ry1 = Math.min(h - 1, dMaxY + pad);
+        outClusters.push({
+          mask: dilated,
+          minX: dMinX, minY: dMinY, maxX: dMaxX, maxY: dMaxY,
+          rx0, ry0, rx1, ry1,
+          rw: rx1 - rx0 + 1,
+          rh: ry1 - ry0 + 1
+        });
+      }
+    }
+    return outClusters;
+  }
+
+  // Build Slant-Aligned Anisotropic Horizon & Structure Guide inside ROI [rw x rh]:
+  // Automatically finds the exact shoreline/horizon/shadow tilt angle (dySlope) across the hole
+  // by matching the left-boundary vertical color profile against the right-boundary vertical color profile,
+  // then interpolates along slanted characteristic lines + multi-pass anisotropic harmonic relaxation!
+  function buildSlantHarmonicGuide(origPx, roiMask, rw, rh) {
+    const guide = new Float32Array(rw * rh * 3);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const o = i * 4, g = i * 3;
+      guide[g] = origPx[o];
+      guide[g + 1] = origPx[o + 1];
+      guide[g + 2] = origPx[o + 2];
+    }
+
+    // 1. Find per-row left & right clean boundary coordinates (offset 3px into known context)
+    const rowXL = new Int32Array(rh).fill(-1);
+    const rowXR = new Int32Array(rh).fill(-1);
+    let hMinY = rh, hMaxY = -1, hMinX = rw, hMaxX = -1;
+    for (let y = 0; y < rh; y++) {
+      let firstH = -1, lastH = -1;
+      for (let x = 0; x < rw; x++) {
+        if (roiMask[y * rw + x]) {
+          if (firstH < 0) firstH = x;
+          lastH = x;
+        }
+      }
+      if (firstH >= 0) {
+        if (y < hMinY) hMinY = y; if (y > hMaxY) hMaxY = y;
+        if (firstH < hMinX) hMinX = firstH; if (lastH > hMaxX) hMaxX = lastH;
+        rowXL[y] = Math.max(0, firstH - 3);
+        rowXR[y] = Math.min(rw - 1, lastH + 3);
+      }
+    }
+    if (hMaxY < hMinY) return { guide, slope: 0 };
+
+    // 2. Estimate dominant horizon/shoreline tilt dyShift between left boundary and right boundary!
+    const holeW = Math.max(8, hMaxX - hMinX + 1);
+    const maxShift = Math.min(48, Math.round(holeW * 0.42));
+    let bestShift = 0, bestCost = 1e18;
+    for (let dy = -maxShift; dy <= maxShift; dy++) {
+      let cost = 0, cnt = 0;
+      for (let y = hMinY; y <= hMaxY; y++) {
+        const yr = y + dy;
+        if (yr < hMinY || yr > hMaxY) continue;
+        const xl = rowXL[y], xr = rowXR[yr];
+        if (xl < 0 || xr < 0 || roiMask[y * rw + xl] || roiMask[yr * rw + xr]) continue;
+        const ol = (y * rw + xl) * 4, or = (yr * rw + xr) * 4;
+        cost += Math.abs(origPx[ol] - origPx[or]) + Math.abs(origPx[ol + 1] - origPx[or + 1]) + Math.abs(origPx[ol + 2] - origPx[or + 2]);
+        cnt++;
+      }
+      if (cnt >= 6) {
+        const avgCost = (cost / cnt) + Math.abs(dy) * 0.22;
+        if (avgCost < bestCost) { bestCost = avgCost; bestShift = dy; }
+      }
+    }
+    const slope = bestShift / holeW;
+
+    // 3. Initialize hole interior along slant-aligned characteristic lines + vertical cap weights
+    const colYT = new Int32Array(rw).fill(-1);
+    const colYB = new Int32Array(rw).fill(-1);
+    for (let x = hMinX; x <= hMaxX; x++) {
+      let firstY = -1, lastY = -1;
+      for (let y = hMinY; y <= hMaxY; y++) {
+        if (roiMask[y * rw + x]) {
+          if (firstY < 0) firstY = y;
+          lastY = y;
+        }
+      }
+      if (firstY >= 0) {
+        colYT[x] = Math.max(0, firstY - 3);
+        colYB[x] = Math.min(rh - 1, lastY + 3);
+      }
+    }
+
+    for (let y = hMinY; y <= hMaxY; y++) {
+      const xl = rowXL[y];
+      const xrBase = rowXR[y];
+      if (xl < 0 || xrBase < 0) continue;
+      for (let x = hMinX; x <= hMaxX; x++) {
+        const idx = y * rw + x;
+        if (!roiMask[idx]) continue;
+        const spanX = Math.max(1, xrBase - xl);
+        const tx = clamp((x - xl) / spanX, 0, 1);
+        // Slant-traced left & right boundary sample coordinates
+        const ylSample = clamp(Math.round(y - tx * bestShift), 0, rh - 1);
+        const yrSample = clamp(Math.round(y + (1 - tx) * bestShift), 0, rh - 1);
+        const xlS = rowXL[ylSample] >= 0 ? rowXL[ylSample] : xl;
+        const xrS = rowXR[yrSample] >= 0 ? rowXR[yrSample] : xrBase;
+        const iL = (ylSample * rw + xlS) * 4;
+        const iR = (yrSample * rw + xrS) * 4;
+
+        let wL = (!roiMask[ylSample * rw + xlS]) ? (1 / Math.max(1, (x - xl) * (x - xl))) : 0.0001;
+        let wR = (!roiMask[yrSample * rw + xrS]) ? (1 / Math.max(1, (xrBase - x) * (xrBase - x))) : 0.0001;
+        // Favor horizontal/slant continuity (2.2x) so shorelines, waves & lawn bands connect crisply!
+        wL *= 2.2; wR *= 2.2;
+
+        const yt = colYT[x], yb = colYB[x];
+        let wT = 0, wB = 0, iT = iL, iB = iR;
+        if (yt >= 0 && !roiMask[yt * rw + x]) {
+          wT = 1 / Math.max(1, (y - yt) * (y - yt));
+          iT = (yt * rw + x) * 4;
+        }
+        if (yb >= 0 && !roiMask[yb * rw + x]) {
+          wB = 1 / Math.max(1, (yb - y) * (yb - y));
+          iB = (yb * rw + x) * 4;
+        }
+        const wSum = wL + wR + wT + wB;
+        const g = idx * 3;
+        guide[g]     = (origPx[iL]     * wL + origPx[iR]     * wR + origPx[iT]     * wT + origPx[iB]     * wB) / wSum;
+        guide[g + 1] = (origPx[iL + 1] * wL + origPx[iR + 1] * wR + origPx[iT + 1] * wT + origPx[iB + 1] * wB) / wSum;
+        guide[g + 2] = (origPx[iL + 2] * wL + origPx[iR + 2] * wR + origPx[iT + 2] * wT + origPx[iB + 2] * wB) / wSum;
+      }
+    }
+
+    // 4. Anisotropic Gauss-Seidel relaxation (higher horizontal/slant conductivity preserves sharp horizons)
+    for (let iter = 0; iter < 18; iter++) {
+      for (let y = Math.max(1, hMinY); y <= Math.min(rh - 2, hMaxY); y++) {
+        for (let x = Math.max(1, hMinX); x <= Math.min(rw - 2, hMaxX); x++) {
+          const i = y * rw + x;
+          if (!roiMask[i]) continue;
+          const g = i * 3;
+          const gL = (i - 1) * 3, gR = (i + 1) * 3, gT = (i - rw) * 3, gB = (i + rw) * 3;
+          guide[g]     = (guide[gL]     * 1.45 + guide[gR]     * 1.45 + guide[gT]     * 0.55 + guide[gB]     * 0.55) * 0.25;
+          guide[g + 1] = (guide[gL + 1] * 1.45 + guide[gR + 1] * 1.45 + guide[gT + 1] * 0.55 + guide[gB + 1] * 0.55) * 0.25;
+          guide[g + 2] = (guide[gL + 2] * 1.45 + guide[gR + 2] * 1.45 + guide[gT + 2] * 0.55 + guide[gB + 2] * 0.55) * 0.25;
+        }
+      }
+    }
+    return { guide, slope, hMinX, hMinY, hMaxX, hMaxY };
+  }
+
+  // Poisson Boundary Color Harmonization: eliminates any color/brightness seam between neural output & original ROI
+  function harmonizeNeuralWithGuide(origPx, neuralPx, roiMask, rw, rh, harmObj, isPrecision) {
+    const { guide, hMinX, hMinY, hMaxX, hMaxY } = harmObj;
+    if (!neuralPx) return guide;
+
+    // 1. Compute boundary residual (orig - neural) on the 2px ring just outside roiMask and diffuse into hole
+    const err = new Float32Array(rw * rh * 3);
+    const ring = dilateBinaryMask(roiMask, rw, rh, 2);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      if (ring[i] && !roiMask[i]) {
+        const o = i * 4, g = i * 3;
+        err[g]     = origPx[o]     - neuralPx[o];
+        err[g + 1] = origPx[o + 1] - neuralPx[o + 1];
+        err[g + 2] = origPx[o + 2] - neuralPx[o + 2];
+      }
+    }
+    for (let iter = 0; iter < 24; iter++) {
+      for (let y = Math.max(1, hMinY); y <= Math.min(rh - 2, hMaxY); y++) {
+        for (let x = Math.max(1, hMinX); x <= Math.min(rw - 2, hMaxX); x++) {
+          const i = y * rw + x;
+          if (!roiMask[i]) continue;
+          const g = i * 3;
+          const gL = (i - 1) * 3, gR = (i + 1) * 3, gT = (i - rw) * 3, gB = (i + rw) * 3;
+          err[g]     = (err[gL]     + err[gR]     + err[gT]     + err[gB])     * 0.25;
+          err[g + 1] = (err[gL + 1] + err[gR + 1] + err[gT + 1] + err[gB + 1]) * 0.25;
+          err[g + 2] = (err[gL + 2] + err[gR + 2] + err[gT + 2] + err[gB + 2]) * 0.25;
+        }
+      }
+    }
+
+    // 2. Fuse Poisson-corrected neural output with Slant-Aligned Harmonic Guide
+    // (suppresses any dark/colored neural smudges while preserving valid neural structure!)
+    const fused = new Float32Array(rw * rh * 3);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const g = i * 3;
+      if (!roiMask[i]) {
+        fused[g] = guide[g]; fused[g + 1] = guide[g + 1]; fused[g + 2] = guide[g + 2];
+        continue;
+      }
+      const o = i * 4;
+      const nr = clamp(neuralPx[o]     + err[g],     0, 255);
+      const ng = clamp(neuralPx[o + 1] + err[g + 1], 0, 255);
+      const nb = clamp(neuralPx[o + 2] + err[g + 2], 0, 255);
+      const hr = guide[g], hg = guide[g + 1], hb = guide[g + 2];
+      const diff = Math.hypot(nr - hr, ng - hg, nb - hb);
+      // In Precision mode, trust slant guide strongly wherever neural output drifts into a dark/colored smudge
+      const neuralW = isPrecision
+        ? (0.44 * Math.exp(-(diff * diff) / (2 * 26 * 26)))
+        : (0.78 * Math.exp(-(diff * diff) / (2 * 48 * 48)));
+      fused[g]     = hr * (1 - neuralW) + nr * neuralW;
+      fused[g + 1] = hg * (1 - neuralW) + ng * neuralW;
+      fused[g + 2] = hb * (1 - neuralW) + nb * neuralW;
+    }
+    return fused;
+  }
+
+  // Precision Eraser ✨ Stage C: 4-Pass Structure-Guided Coherent PatchMatch Exemplar Synthesis
+  // + Multi-Band Frequency-Separated Detail Fusion (synthesizes 100% full-res grass blades, sand ripples,
+  // waves, cobblestones & skin pores with zero blurry brush spots and zero patch seams!)
+  function synthesizePrecisionTextureOnROI(origPx, roiMask, rw, rh, fusedGuide, slope, hMinX, hMinY, hMaxX, hMaxY, isPrecision) {
+    const outPx = new Uint8ClampedArray(origPx);
+    // Build smooth cosine feather alpha (10px ramp at outer boundary of roiMask so transition is 100% invisible)
+    const innerCore = new Uint8Array(rw * rh);
+    const erode1 = dilateBinaryMask(invertBinaryMask(roiMask, rw, rh), rw, rh, 6);
+    for (let i = 0, n = rw * rh; i < n; i++) innerCore[i] = (roiMask[i] && !erode1[i]) ? 1 : 0;
+    const featherRGBA = new Uint8ClampedArray(rw * rh * 4);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const v = roiMask[i] ? (innerCore[i] ? 255 : 165) : 0;
+      featherRGBA[i * 4] = featherRGBA[i * 4 + 1] = featherRGBA[i * 4 + 2] = featherRGBA[i * 4 + 3] = v;
+    }
+    const softAlpha = boxBlurRGBA(featherRGBA, rw, rh, 5);
+
+    // Separate known background into Macro Lighting Envelope (rMacro = 7px) + Crisp Medium/Fine Texture Detail
+    const rMacro = clamp(Math.round(Math.min(rw, rh) * 0.042), 5, 10);
+    // Populate hole in a working copy with fusedGuide first so boxBlurRGBA has zero object color bleed!
+    const cleanBase = new Uint8ClampedArray(origPx);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      if (roiMask[i]) {
+        const o = i * 4, g = i * 3;
+        cleanBase[o]     = clamp(Math.round(fusedGuide[g]),     0, 255);
+        cleanBase[o + 1] = clamp(Math.round(fusedGuide[g + 1]), 0, 255);
+        cleanBase[o + 2] = clamp(Math.round(fusedGuide[g + 2]), 0, 255);
+      }
+    }
+    const macroLow = boxBlurRGBA(cleanBase, rw, rh, rMacro);
+
+    // Valid source mask: must be at least (rMacro + 2) px outside roiMask so patches never touch removed object
+    const forbiddenSrc = dilateBinaryMask(roiMask, rw, rh, rMacro + 2);
+    const validSources = [];
+    const srcStride = Math.max(2, Math.round(Math.sqrt(rw * rh) / 48));
+    for (let y = 4; y < rh - 4; y += srcStride) {
+      for (let x = 4; x < rw - 4; x += srcStride) {
+        if (!forbiddenSrc[y * rw + x]) validSources.push(x, y);
+      }
+    }
+
+    // If Standard Magic Eraser mode (or very few background pixels), use harmonized neural + micro-grain transfer
+    if (!isPrecision || validSources.length < 16) {
+      for (let y = hMinY; y <= hMaxY; y++) {
+        for (let x = hMinX; x <= hMaxX; x++) {
+          const i = y * rw + x;
+          if (!roiMask[i]) continue;
+          const a = clamp((softAlpha[i * 4] / 220), 0, 1);
+          const o = i * 4, g = i * 3;
+          // Pick a nearby valid background pixel along the slant line for subtle high-frequency grain
+          let gx = 0, gy = 0;
+          if (validSources.length >= 4) {
+            const k = ((x * 7 + y * 13) % (validSources.length >> 1)) * 2;
+            const sx = validSources[k], sy = validSources[k + 1];
+            const so = (sy * rw + sx) * 4;
+            gx = (origPx[so] - macroLow[so]) * 0.45;
+            gy = (origPx[so + 1] - macroLow[so + 1]) * 0.45;
+            const gz = (origPx[so + 2] - macroLow[so + 2]) * 0.45;
+            outPx[o]     = clamp(Math.round(origPx[o]     * (1 - a) + (fusedGuide[g]     + gx) * a), 0, 255);
+            outPx[o + 1] = clamp(Math.round(origPx[o + 1] * (1 - a) + (fusedGuide[g + 1] + gy) * a), 0, 255);
+            outPx[o + 2] = clamp(Math.round(origPx[o + 2] * (1 - a) + (fusedGuide[g + 2] + gz) * a), 0, 255);
+          } else {
+            outPx[o]     = clamp(Math.round(origPx[o]     * (1 - a) + fusedGuide[g]     * a), 0, 255);
+            outPx[o + 1] = clamp(Math.round(origPx[o + 1] * (1 - a) + fusedGuide[g + 1] * a), 0, 255);
+            outPx[o + 2] = clamp(Math.round(origPx[o + 2] * (1 - a) + fusedGuide[g + 2] * a), 0, 255);
+          }
+        }
+      }
+      return outPx;
+    }
+
+    // ------------------------------------------------------------------------
+    // Precision Eraser ✨ Stage C: 2D Coherent Overlapping Block Image Quilting
+    // (Efros & Freeman Quilting + Slant-Aligned Guide Macro-Lighting Transfer)
+    // Places whole contiguous 2D blocks (e.g. 18x18px with 6px overlap) of real
+    // background pixels so every grass blade, clover spec, sand ripple, ocean
+    // wave, and pebble is copied at 100% razor-sharp 1:1 native camera quality
+    // with ZERO averaging blur and ZERO horizontal streaks!
+    // ------------------------------------------------------------------------
+    const holeW = Math.max(8, hMaxX - hMinX + 1), holeH = Math.max(8, hMaxY - hMinY + 1);
+    const B = clamp(Math.round(Math.min(holeW, holeH) * 0.24), 14, 22);
+    const O = Math.max(5, Math.round(B * 0.35));
+    const S = Math.max(6, B - O);
+
+    // Collect valid B x B source block top-left corners strictly outside forbiddenSrc
+    const candBlocks = [];
+    const candStride = Math.max(3, Math.round(Math.min(rw, rh) / 48));
+    for (let sy = 2; sy <= rh - B - 2; sy += candStride) {
+      for (let sx = 2; sx <= rw - B - 2; sx += candStride) {
+        if (!forbiddenSrc[sy * rw + sx] &&
+            !forbiddenSrc[sy * rw + (sx + B - 1)] &&
+            !forbiddenSrc[(sy + B - 1) * rw + sx] &&
+            !forbiddenSrc[(sy + B - 1) * rw + (sx + B - 1)] &&
+            !forbiddenSrc[(sy + (B >> 1)) * rw + (sx + (B >> 1))]) {
+          candBlocks.push(sx, sy);
+        }
+      }
+    }
+
+    if (candBlocks.length < 4) return outPx;
+
+    const synthR = new Float32Array(rw * rh);
+    const synthG = new Float32Array(rw * rh);
+    const synthB = new Float32Array(rw * rh);
+    const filled = new Uint8Array(rw * rh);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      if (!roiMask[i]) {
+        const o = i * 4;
+        synthR[i] = origPx[o];
+        synthG[i] = origPx[o + 1];
+        synthB[i] = origPx[o + 2];
+        filled[i] = 1;
+      }
+    }
+
+    const qMinX = Math.max(0, hMinX - O), qMaxX = Math.min(rw - B, hMaxX + O);
+    const qMinY = Math.max(0, hMinY - O), qMaxY = Math.min(rh - B, hMaxY + O);
+    const midB = B >> 1;
+    // Track used source blocks & recent source coordinates so adjacent blocks NEVER repeat the same flower/ripple!
+    const usedCounts = new Uint16Array(candBlocks.length >> 1);
+    const recentSrc = [];
+
+    for (let by = qMinY; by <= qMaxY; by += S) {
+      for (let bx = qMinX; bx <= qMaxX; bx += S) {
+        // Check if this B x B block overlaps any unfilled hole pixels
+        let hasHole = false;
+        for (let dy = 0; dy < B && !hasHole; dy += 2) {
+          const row = (by + dy) * rw + bx;
+          for (let dx = 0; dx < B; dx += 2) {
+            if (roiMask[row + dx]) { hasHole = true; break; }
+          }
+        }
+        if (!hasHole) continue;
+
+        // Target guide color at center & corners of target block
+        const gMid = ((by + midB) * rw + (bx + midB)) * 3;
+        const tMidR = fusedGuide[gMid], tMidG = fusedGuide[gMid + 1], tMidB = fusedGuide[gMid + 2];
+
+        let bestSx = candBlocks[0], bestSy = candBlocks[1], bestIdx = 0, bestCost = 1e18;
+        for (let c = 0; c < candBlocks.length; c += 2) {
+          const sx = candBlocks[c], sy = candBlocks[c + 1];
+          const cIdx = c >> 1;
+
+          // 1. Slant-aligned perspective depth penalty + anti-repetition penalty!
+          const dxBlock = sx - bx;
+          const dySlant = (sy - by) - dxBlock * slope;
+          let cost = (dySlant * dySlant * 2.8 + dxBlock * dxBlock * 0.14) + usedCounts[cIdx] * 1800;
+          for (let r = 0; r < recentSrc.length; r += 2) {
+            const rdx = sx - recentSrc[r], rdy = sy - recentSrc[r + 1];
+            if (rdx * rdx + rdy * rdy < B * B) { cost += 2400; break; }
+          }
+          if (cost >= bestCost) continue;
+
+          // 2. Macro guide similarity at center of the B x B block
+          const sMid = ((sy + midB) * rw + (sx + midB)) * 4;
+          const dMr = macroLow[sMid] - tMidR, dMg = macroLow[sMid + 1] - tMidG, dMb = macroLow[sMid + 2] - tMidB;
+          cost += (dMr * dMr + dMg * dMg + dMb * dMb) * 1.4;
+          if (cost >= bestCost) continue;
+
+          // 3. Overlap seam error along already-filled pixels in the B x B block (left O cols & top O rows)
+          let ovErr = 0, ovCnt = 0;
+          for (let dy = 0; dy < B; dy += 2) {
+            const tyRow = (by + dy) * rw;
+            const syRow = (sy + dy) * rw;
+            const maxDx = (dy < O) ? B : O;
+            for (let dx = 0; dx < maxDx; dx += 2) {
+              const ti = tyRow + bx + dx;
+              if (!filled[ti]) continue;
+              const si = syRow + sx + dx;
+              const so = si * 4, tg = ti * 3;
+              const cR = origPx[so]     + (fusedGuide[tg]     - macroLow[so])     * 0.65;
+              const cG = origPx[so + 1] + (fusedGuide[tg + 1] - macroLow[so + 1]) * 0.65;
+              const cB = origPx[so + 2] + (fusedGuide[tg + 2] - macroLow[so + 2]) * 0.65;
+              const dr = cR - synthR[ti], dg = cG - synthG[ti], db = cB - synthB[ti];
+              ovErr += dr * dr + dg * dg + db * db;
+              ovCnt++;
+            }
+          }
+          if (ovCnt > 0) cost += (ovErr / ovCnt) * 2.6;
+          if (cost < bestCost) {
+            bestCost = cost; bestSx = sx; bestSy = sy; bestIdx = cIdx;
+          }
+        }
+        usedCounts[bestIdx]++;
+        recentSrc.push(bestSx, bestSy);
+        if (recentSrc.length > 16) recentSrc.splice(0, 2);
+
+        // Quilt the winning contiguous B x B 2D texture block into synthR/G/B!
+        for (let dy = 0; dy < B; dy++) {
+          const ty = by + dy, sy = bestSy + dy;
+          const wTop = dy < O ? ((dy + 0.5) / O) : 1.0;
+          for (let dx = 0; dx < B; dx++) {
+            const tx = bx + dx, sx = bestSx + dx;
+            const ti = ty * rw + tx;
+            if (!roiMask[ti]) continue;
+            const si = sy * rw + sx, so = si * 4, tg = ti * 3;
+            const sLowR = macroLow[so], sLowG = macroLow[so + 1], sLowB = macroLow[so + 2];
+            // 100% crisp full-res 2D camera texture detail + harmonized macro lighting envelope!
+            const detR = origPx[so]     - sLowR;
+            const detG = origPx[so + 1] - sLowG;
+            const detB = origPx[so + 2] - sLowB;
+            const candR = (fusedGuide[tg]     * 0.66 + sLowR * 0.34) + detR * 1.04;
+            const candG = (fusedGuide[tg + 1] * 0.66 + sLowG * 0.34) + detG * 1.04;
+            const candB = (fusedGuide[tg + 2] * 0.66 + sLowB * 0.34) + detB * 1.04;
+
+            if (!filled[ti]) {
+              synthR[ti] = candR; synthG[ti] = candG; synthB[ti] = candB;
+              filled[ti] = 1;
+            } else {
+              // Minimum-error sharpened seam transition across the O-pixel overlap band (zero ghosting!)
+              const wLeft = dx < O ? ((dx + 0.5) / O) : 1.0;
+              const linearW = Math.min(wTop, wLeft);
+              // S-curve sharpening keeps individual grass blades & sand grains crisp in the overlap!
+              const wNew = clamp((linearW - 0.5) * 2.2 + 0.5, 0, 1);
+              synthR[ti] = synthR[ti] * (1 - wNew) + candR * wNew;
+              synthG[ti] = synthG[ti] * (1 - wNew) + candG * wNew;
+              synthB[ti] = synthB[ti] * (1 - wNew) + candB * wNew;
+            }
+          }
+        }
+      }
+    }
+
+    // Composite quilted hole onto outPx with smooth 6px outer boundary feather
+    for (let y = hMinY; y <= hMaxY; y++) {
+      for (let x = hMinX; x <= hMaxX; x++) {
+        const i = y * rw + x;
+        if (!roiMask[i]) continue;
+        const alpha = clamp(softAlpha[i * 4] / 225, 0, 1);
+        const o = i * 4, g = i * 3;
+        const r = filled[i] ? synthR[i] : fusedGuide[g];
+        const gr = filled[i] ? synthG[i] : fusedGuide[g + 1];
+        const b = filled[i] ? synthB[i] : fusedGuide[g + 2];
+        outPx[o]     = clamp(Math.round(origPx[o]     * (1 - alpha) + r  * alpha), 0, 255);
+        outPx[o + 1] = clamp(Math.round(origPx[o + 1] * (1 - alpha) + gr * alpha), 0, 255);
+        outPx[o + 2] = clamp(Math.round(origPx[o + 2] * (1 - alpha) + b  * alpha), 0, 255);
+      }
+    }
+    return outPx;
+  }
+
+  function invertBinaryMask(mask, w, h) {
+    const out = new Uint8Array(w * h);
+    for (let i = 0, n = w * h; i < n; i++) out[i] = mask[i] ? 0 : 1;
+    return out;
+  }
+
+  // Google Photos Magic Eraser "Camouflage" Mode on ROI:
+  // Recolors & mutes distracting bright/neon object colors to match surrounding background tones
+  // while preserving 100% of the object's natural 3D surface shading and texture!
+  function applyCamouflageOnROI(origPx, roiMask, rw, rh) {
+    const outPx = new Uint8ClampedArray(origPx);
+    const outerRing = dilateBinaryMask(roiMask, rw, rh, 18);
+    const innerRing = dilateBinaryMask(roiMask, rw, rh, 4);
+    let bgR = 0, bgG = 0, bgB = 0, bgCnt = 0;
+    let objLumSum = 0, objCnt = 0;
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const o = i * 4;
+      if (outerRing[i] && !innerRing[i]) {
+        bgR += origPx[o]; bgG += origPx[o + 1]; bgB += origPx[o + 2]; bgCnt++;
+      } else if (roiMask[i]) {
+        objLumSum += 0.299 * origPx[o] + 0.587 * origPx[o + 1] + 0.114 * origPx[o + 2];
+        objCnt++;
+      }
+    }
+    if (bgCnt < 4 || objCnt < 1) return outPx;
+    bgR /= bgCnt; bgG /= bgCnt; bgB /= bgCnt;
+    const bgLum = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
+    const bgChR = bgR - bgLum, bgChG = bgG - bgLum, bgChB = bgB - bgLum;
+    const meanObjLum = objLumSum / objCnt;
+
+    const featherRGBA = new Uint8ClampedArray(rw * rh * 4);
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const v = roiMask[i] ? 255 : 0;
+      featherRGBA[i * 4] = featherRGBA[i * 4 + 1] = featherRGBA[i * 4 + 2] = featherRGBA[i * 4 + 3] = v;
+    }
+    const softAlpha = boxBlurRGBA(featherRGBA, rw, rh, 3);
+
+    for (let i = 0, n = rw * rh; i < n; i++) {
+      const maskA = softAlpha[i * 4] / 255;
+      if (maskA <= 0.01) continue;
+      const o = i * 4;
+      const r = origPx[o], g = origPx[o + 1], b = origPx[o + 2];
+      // Gate camouflage strictly to pixels whose color differs from surrounding background (zero halo on sand/grass!)
+      const dBg = Math.hypot(r - bgR, g - bgG, b - bgB);
+      const wObj = clamp((dBg - 22) / 38, 0, 1);
+      const a = maskA * wObj;
+      if (a <= 0.01) continue;
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const targetLum = clamp(lum * 0.72 + bgLum * 0.28, 12, 245);
+      const scaleChroma = clamp(targetLum / Math.max(25, bgLum), 0.35, 1.35);
+      const camR = targetLum + bgChR * scaleChroma * 0.90 + (r - lum) * 0.08;
+      const camG = targetLum + bgChG * scaleChroma * 0.90 + (g - lum) * 0.08;
+      const camB = targetLum + bgChB * scaleChroma * 0.90 + (b - lum) * 0.08;
+      outPx[o]     = clamp(Math.round(r * (1 - a) + camR * a), 0, 255);
+      outPx[o + 1] = clamp(Math.round(g * (1 - a) + camG * a), 0, 255);
+      outPx[o + 2] = clamp(Math.round(b * (1 - a) + camB * a), 0, 255);
+    }
+    return outPx;
+  }
+
+  // Extract a single cluster's local binary mask (rw x rh) and apply either neural + Precision synthesis or offline synthesis
+  function processClusterSynchronously(wCtx, cluster, isPrecision, isCamouflage, neuralPx = null) {
+    const { rx0, ry0, rw, rh, mask } = cluster;
+    const w = cs.workCanvas.width;
+    const roiImgData = wCtx.getImageData(rx0, ry0, rw, rh);
+    const origPx = roiImgData.data;
+    const roiMask = new Uint8Array(rw * rh);
+    for (let y = 0; y < rh; y++) {
+      const srcRow = (ry0 + y) * w + rx0;
+      const dstRow = y * rw;
+      for (let x = 0; x < rw; x++) {
+        roiMask[dstRow + x] = mask[srcRow + x];
+      }
+    }
+
+    let resultPx;
+    if (isCamouflage) {
+      resultPx = applyCamouflageOnROI(origPx, roiMask, rw, rh);
+    } else {
+      const harmObj = buildSlantHarmonicGuide(origPx, roiMask, rw, rh);
+      const fusedGuide = harmonizeNeuralWithGuide(origPx, neuralPx, roiMask, rw, rh, harmObj, isPrecision);
+      resultPx = synthesizePrecisionTextureOnROI(
+        origPx, roiMask, rw, rh,
+        fusedGuide, harmObj.slope,
+        harmObj.hMinX, harmObj.hMinY, harmObj.hMaxX, harmObj.hMaxY,
+        isPrecision
+      );
+    }
+    roiImgData.data.set(resultPx);
+    wCtx.putImageData(roiImgData, rx0, ry0);
+  }
+
+  function finishRemoveJob(toastMsg) {
+    const job = cs.remove._pendingJob;
+    cs.remove._pendingJob = null;
+    cs.remove.activeReqId = null;
+    cs.remove.busy = false;
+    if (job && job.snap) {
+      cs.remove.undoStack.push(job.snap);
+      if (cs.remove.undoStack.length > 6) cs.remove.undoStack.shift();
+    }
+    if (cs.remove.maskCanvas) {
+      cs.remove.maskCanvas.getContext('2d').clearRect(0, 0, cs.remove.maskCanvas.width, cs.remove.maskCanvas.height);
+    }
+    cs.remove.hasMask = false;
+    syncFastCanvasFromWork();
+    cs.enhance.dirty = true;
+    updateRemoveAiBar();
+    scheduleRender();
+    if (toastMsg) window.showToast?.(toastMsg);
+  }
+
   function triggerObjectRemove() {
     if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) {
-      window.showToast?.('Brush over the object to remove first');
+      const hint = cs.remove.tool === 'tap'
+        ? 'Tap an object on the photo first'
+        : (cs.remove.tool === 'lasso' ? 'Circle around an object first' : 'Brush over the object to remove first');
+      window.showToast?.(hint);
       return false;
     }
     if (cs.remove.busy) return false;
 
-    // Prefer native Picsart MI-GAN 512 ONNX neural inpainting on Android & iOS!
+    // Camouflage mode runs instantaneously at 60 FPS with zero AI download needed!
+    if (cs.remove.action === 'camouflage') {
+      return applyExemplarFallbackRemove();
+    }
+
+    // Prefer native Picsart MI-GAN 512 ONNX neural inpainting + Precision HD synthesis on Android & iOS!
     if (hasNativeObjectRemove()) {
       refreshRemoveModelStatus();
       const st = cs.remove.modelStatus;
@@ -2372,7 +3555,7 @@
         window.showToast?.('AI Eraser downloading… will remove automatically when ready!');
         return true;
       }
-      // Kick off one-time 28 MB download and auto-run MI-GAN as soon as it finishes!
+      // Kick off one-time 28 MB download and auto-run as soon as it finishes!
       cs.remove.pendingRunAfterDownload = true;
       window.AndroidApp.objectRemoveDownload();
       refreshRemoveModelStatus();
@@ -2380,9 +3563,10 @@
       return true;
     }
 
-    // Pure-browser fallback: Exemplar Patch-Copy Inpainter
+    // Pure-browser / offline execution: runs full Precision Eraser Slant-Harmonic + Coherent PatchMatch HD!
     if (applyExemplarFallbackRemove()) {
-      window.showToast?.('✨ Object removed!');
+      const label = cs.remove.engine === 'precision' ? '✨ Object removed with Precision Eraser!' : '✨ Object removed!';
+      window.showToast?.(label);
       return true;
     }
     return false;
@@ -2390,149 +3574,107 @@
 
   function runNativeMiganRemove() {
     if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) return;
-    cs.remove.busy = true;
-    const reqId = uid('rm');
-    cs.remove.activeReqId = reqId;
-    updateRemoveAiBar();
-
-    // Save undo snapshot before applying
     const w = cs.workCanvas.width, h = cs.workCanvas.height;
+    const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+    const mCtx = cs.remove.maskCanvas.getContext('2d', { willReadFrequently: true });
+    const px = wCtx.getImageData(0, 0, w, h).data;
+    const rawMask = mCtx.getImageData(0, 0, w, h).data;
+    const isPrecision = cs.remove.engine === 'precision';
+    const clusters = prepareRemovalClusters(w, h, px, rawMask, isPrecision, false);
+    if (!clusters.length) return;
+
     const snap = document.createElement('canvas');
     snap.width = w; snap.height = h;
     snap.getContext('2d').drawImage(cs.workCanvas, 0, 0);
-    cs.remove._pendingSnap = snap;
 
-    const imgDataUrl = cs.workCanvas.toDataURL('image/jpeg', 0.96);
-    const maskDataUrl = cs.remove.maskCanvas.toDataURL('image/png');
+    cs.remove.busy = true;
+    cs.remove._pendingJob = {
+      snap,
+      clusters,
+      idx: 0,
+      isPrecision,
+      totalInferMs: 0
+    };
+    updateRemoveAiBar();
+    dispatchNextClusterToNativeMigan();
+  }
+
+  function dispatchNextClusterToNativeMigan() {
+    const job = cs.remove._pendingJob;
+    if (!job || !cs.workCanvas) return;
+    if (job.idx >= job.clusters.length) {
+      const sec = (job.totalInferMs / 1000).toFixed(1);
+      const msg = job.isPrecision
+        ? `✨ Removed with Precision Eraser (${sec}s)`
+        : `✨ Removed with Magic Eraser (${sec}s)`;
+      finishRemoveJob(msg);
+      return;
+    }
+
+    const cluster = job.clusters[job.idx];
+    const { rx0, ry0, rw, rh, mask } = cluster;
+    const w = cs.workCanvas.width;
+
+    // Build focused high-res ROI image crop & binary mask crop so MI-GAN runs at up to 6x higher pixel density!
+    const roiImgC = document.createElement('canvas');
+    roiImgC.width = rw; roiImgC.height = rh;
+    roiImgC.getContext('2d').drawImage(cs.workCanvas, rx0, ry0, rw, rh, 0, 0, rw, rh);
+
+    const roiMaskC = document.createElement('canvas');
+    roiMaskC.width = rw; roiMaskC.height = rh;
+    const rmCtx = roiMaskC.getContext('2d');
+    const rmData = rmCtx.createImageData(rw, rh);
+    const rmd = rmData.data;
+    for (let y = 0; y < rh; y++) {
+      const srcRow = (ry0 + y) * w + rx0;
+      const dstRow = y * rw;
+      for (let x = 0; x < rw; x++) {
+        if (mask[srcRow + x]) {
+          const o = (dstRow + x) * 4;
+          rmd[o] = 255; rmd[o + 1] = 0; rmd[o + 2] = 0; rmd[o + 3] = 255;
+        }
+      }
+    }
+    rmCtx.putImageData(rmData, 0, 0);
+
+    const reqId = uid('rm');
+    cs.remove.activeReqId = reqId;
+    const imgDataUrl = roiImgC.toDataURL('image/jpeg', 0.98);
+    const maskDataUrl = roiMaskC.toDataURL('image/png');
     try {
       window.AndroidApp.objectRemoveInpaint(reqId, imgDataUrl, maskDataUrl);
-    } catch (e) {
-      cs.remove.busy = false;
-      cs.remove.activeReqId = null;
-      cs.remove._pendingSnap = null;
-      updateRemoveAiBar();
-      applyExemplarFallbackRemove();
+    } catch (_) {
+      const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+      processClusterSynchronously(wCtx, cluster, job.isPrecision, false, null);
+      job.idx++;
+      dispatchNextClusterToNativeMigan();
     }
   }
 
-  // Exemplar patch-copy fallback (samples real surrounding texture patches instead of flat triangles)
+  // Synchronous execution for offline fallback, desktop browser, or Camouflage mode
   function applyExemplarFallbackRemove() {
     if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) return false;
     const w = cs.workCanvas.width, h = cs.workCanvas.height;
-    const mCtx = cs.remove.maskCanvas.getContext('2d', { willReadFrequently: true });
-    const maskData = mCtx.getImageData(0, 0, w, h).data;
-
-    let minX = w, minY = h, maxX = -1, maxY = -1;
-    for (let y = 0; y < h; y++) {
-      const row = y * w;
-      for (let x = 0; x < w; x++) {
-        if (maskData[(row + x) * 4 + 3] > 20) {
-          if (x < minX) minX = x; if (x > maxX) maxX = x;
-          if (y < minY) minY = y; if (y > maxY) maxY = y;
-        }
-      }
-    }
-    if (maxX < minX || maxY < minY) return false;
-
     const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+    const mCtx = cs.remove.maskCanvas.getContext('2d', { willReadFrequently: true });
+    const px = wCtx.getImageData(0, 0, w, h).data;
+    const rawMask = mCtx.getImageData(0, 0, w, h).data;
+
+    const isCamouflage = cs.remove.action === 'camouflage';
+    const isPrecision = cs.remove.engine === 'precision';
+    const clusters = prepareRemovalClusters(w, h, px, rawMask, isPrecision, isCamouflage);
+    if (!clusters.length) return false;
+
     const snap = document.createElement('canvas');
     snap.width = w; snap.height = h;
     snap.getContext('2d').drawImage(cs.workCanvas, 0, 0);
-    cs.remove.undoStack.push(snap);
-    if (cs.remove.undoStack.length > 6) cs.remove.undoStack.shift();
 
-    const pad = Math.min(96, Math.max(40, Math.round(Math.max(maxX - minX, maxY - minY) * 0.6)));
-    const rx0 = Math.max(0, minX - pad), ry0 = Math.max(0, minY - pad);
-    const rx1 = Math.min(w - 1, maxX + pad), ry1 = Math.min(h - 1, maxY + pad);
-    const rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
-
-    const roi = wCtx.getImageData(rx0, ry0, rw, rh);
-    const px = roi.data;
-    const orig = new Uint8ClampedArray(px);
-    const known = new Uint8Array(rw * rh);
-    const origMask = new Uint8Array(rw * rh);
-
-    for (let y = 0; y < rh; y++) {
-      for (let x = 0; x < rw; x++) {
-        const m = maskData[((ry0 + y) * w + (rx0 + x)) * 4 + 3] > 20 ? 1 : 0;
-        origMask[y * rw + x] = m;
-        known[y * rw + x] = m ? 0 : 1;
-      }
+    for (const cluster of clusters) {
+      processClusterSynchronously(wCtx, cluster, isPrecision, isCamouflage, null);
     }
 
-    // Collect valid unmasked candidate source centers for texture patch matching
-    const PR = 4; // 9x9 patch
-    const sources = [];
-    const stride = Math.max(3, Math.round(Math.sqrt(rw * rh) / 38));
-    for (let sy = PR; sy < rh - PR; sy += stride) {
-      for (let sx = PR; sx < rw - PR; sx += stride) {
-        if (!origMask[sy * rw + sx] && !origMask[(sy - PR) * rw + (sx - PR)] &&
-            !origMask[(sy + PR) * rw + (sx + PR)] && !origMask[(sy - PR) * rw + (sx + PR)] &&
-            !origMask[(sy + PR) * rw + (sx - PR)]) {
-          sources.push(sx, sy);
-        }
-      }
-    }
-
-    // Criminisi-style priority onion-peel copying real exemplar patches from surrounding background
-    const step = 3;
-    for (let pass = 0; pass < Math.max(rw, rh); pass++) {
-      let bestX = -1, bestY = -1, bestConf = -1;
-      for (let y = PR; y < rh - PR; y += step) {
-        for (let x = PR; x < rw - PR; x += step) {
-          if (known[y * rw + x]) continue;
-          let kCnt = 0;
-          for (let dy = -PR; dy <= PR; dy += 2) {
-            for (let dx = -PR; dx <= PR; dx += 2) {
-              if (known[(y + dy) * rw + (x + dx)]) kCnt++;
-            }
-          }
-          if (kCnt > bestConf) { bestConf = kCnt; bestX = x; bestY = y; }
-        }
-      }
-      if (bestX < 0 || bestConf <= 0) break;
-
-      let bestSx = -1, bestSy = -1, bestErr = 1e18;
-      for (let s = 0; s < sources.length; s += 2) {
-        const sx = sources[s], sy = sources[s + 1];
-        let err = 0;
-        for (let dy = -PR; dy <= PR; dy += 2) {
-          for (let dx = -PR; dx <= PR; dx += 2) {
-            const ti = (bestY + dy) * rw + (bestX + dx);
-            if (!known[ti]) continue;
-            const si = (sy + dy) * rw + (sx + dx);
-            const dr = px[ti * 4] - orig[si * 4];
-            const dg = px[ti * 4 + 1] - orig[si * 4 + 1];
-            const db = px[ti * 4 + 2] - orig[si * 4 + 2];
-            err += dr * dr + dg * dg + db * db;
-            if (err >= bestErr) break;
-          }
-          if (err >= bestErr) break;
-        }
-        // Slight proximity preference keeps horizon/sand continuity intact
-        const distPen = ((sx - bestX) * (sx - bestX) + (sy - bestY) * (sy - bestY)) * 0.15;
-        if (err + distPen < bestErr) { bestErr = err + distPen; bestSx = sx; bestSy = sy; }
-      }
-      if (bestSx < 0) break;
-
-      for (let dy = -PR; dy <= PR; dy++) {
-        for (let dx = -PR; dx <= PR; dx++) {
-          const ti = (bestY + dy) * rw + (bestX + dx);
-          if (known[ti]) continue;
-          const si = (bestSy + dy) * rw + (bestSx + dx);
-          px[ti * 4] = orig[si * 4];
-          px[ti * 4 + 1] = orig[si * 4 + 1];
-          px[ti * 4 + 2] = orig[si * 4 + 2];
-          known[ti] = 1;
-        }
-      }
-    }
-
-    wCtx.putImageData(roi, rx0, ry0);
-    mCtx.clearRect(0, 0, w, h);
-    cs.remove.hasMask = false;
-    cs.enhance.dirty = true;
-    scheduleRender();
+    cs.remove._pendingJob = { snap };
+    finishRemoveJob(isCamouflage ? '✨ Object camouflaged seamlessly!' : null);
     return true;
   }
 
@@ -3119,12 +4261,49 @@
     // Draw Text & Sticker layers
     renderLayers(ctx, W, H, true);
 
-    // Draw translucent red Remove mask overlay
-    if (cs.activeTool === 'remove' && cs.remove.maskCanvas && cs.remove.hasMask) {
-      ctx.save();
-      ctx.globalAlpha = 0.58;
-      ctx.drawImage(cs.remove.maskCanvas, 0, 0, W, H);
-      ctx.restore();
+    // Draw translucent glowing Remove mask overlay + live Canva brush ring / Google Lasso loop!
+    if (cs.activeTool === 'remove') {
+      if (cs.remove.maskCanvas && cs.remove.hasMask) {
+        ctx.save();
+        ctx.globalAlpha = cs.remove.busy ? 0.72 : 0.56;
+        ctx.shadowColor = cs.remove.action === 'camouflage' ? '#38bdf8' : '#fb7185';
+        ctx.shadowBlur = Math.max(4, Math.round(Math.min(W, H) * 0.01));
+        ctx.drawImage(cs.remove.maskCanvas, 0, 0, W, H);
+        ctx.restore();
+      }
+      // Live Circle / Lasso loop path while user is drawing a circle around an object
+      if (cs.remove.tool === 'lasso' && Array.isArray(cs.remove.lassoPoints) && cs.remove.lassoPoints.length > 1) {
+        const pts = cs.remove.lassoPoints;
+        const unit = Math.min(W, H) / 600;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0] * W, pts[0][1] * H);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * W, pts[i][1] * H);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(244, 63, 94, 0.22)';
+        ctx.fill();
+        ctx.lineWidth = Math.max(2, 2.6 * unit);
+        ctx.strokeStyle = '#ffffff';
+        ctx.shadowColor = '#f43f5e';
+        ctx.shadowBlur = 10 * unit;
+        ctx.setLineDash([7 * unit, 5 * unit]);
+        ctx.stroke();
+        ctx.restore();
+      }
+      // Live Canva circular brush cursor ring while painting
+      if (cs.remove.tool === 'brush' && cs.remove.painting && cs.remove.cursorPt) {
+        const unit = Math.min(W, H) / 600;
+        const r = Math.max(5, cs.remove.brushSize * unit);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cs.remove.cursorPt.x * W, cs.remove.cursorPt.y * H, r, 0, Math.PI * 2);
+        ctx.lineWidth = Math.max(1.8, 2.2 * unit);
+        ctx.strokeStyle = '#ffffff';
+        ctx.shadowColor = 'rgba(0,0,0,0.65)';
+        ctx.shadowBlur = 6 * unit;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
@@ -3228,11 +4407,21 @@
         };
         scheduleRender();
       } else if (cs.activeTool === 'remove') {
+        if (cs.remove.busy) { cs.pointer.active = false; return; }
         cs.pointer.mode = 'remove';
         cs.remove.painting = true;
         cs.remove.lastPt = { x: p.x, y: p.y };
-        paintRemoveDot(p.x, p.y, null);
-        scheduleRender();
+        cs.remove.cursorPt = { x: p.x, y: p.y };
+        if (cs.remove.tool === 'tap') {
+          // Canva Magic Eraser Click Object mode: segmented on pointer up / tap
+          scheduleRender();
+        } else if (cs.remove.tool === 'lasso') {
+          cs.remove.lassoPoints = [[p.x, p.y]];
+          scheduleRender();
+        } else {
+          paintRemoveDot(p.x, p.y, null);
+          scheduleRender();
+        }
       } else if (cs.activeTool === 'enhance') {
         cs.pointer.mode = 'split';
         cs.enhance.splitPos = clamp(p.x, 0.04, 0.96);
@@ -3306,9 +4495,15 @@
         cs.draw.activeStroke.points.push([p.x, p.y]);
         scheduleRender();
       } else if (cs.pointer.mode === 'remove' && cs.remove.painting) {
-        paintRemoveDot(p.x, p.y, cs.remove.lastPt);
-        cs.remove.lastPt = { x: p.x, y: p.y };
-        scheduleRender();
+        cs.remove.cursorPt = { x: p.x, y: p.y };
+        if (cs.remove.tool === 'lasso') {
+          cs.remove.lassoPoints.push([p.x, p.y]);
+          scheduleRender();
+        } else if (cs.remove.tool === 'brush') {
+          paintRemoveDot(p.x, p.y, cs.remove.lastPt);
+          cs.remove.lastPt = { x: p.x, y: p.y };
+          scheduleRender();
+        }
       } else if (cs.pointer.mode === 'split') {
         cs.enhance.splitPos = clamp(p.x, 0.04, 0.96);
         scheduleRender();
@@ -3354,8 +4549,23 @@
         cs.draw.redo = [];
         scheduleRender();
       } else if (mode === 'remove' && cs.remove.painting) {
+        const lastPt = cs.remove.lastPt || { x: cs.pointer.startX, y: cs.pointer.startY };
         cs.remove.painting = false;
         cs.remove.lastPt = null;
+        cs.remove.cursorPt = null;
+        if (cs.remove.tool === 'tap') {
+          const ok = autoSelectObjectAtPoint(lastPt.x, lastPt.y);
+          if (ok && !cs.remove.autoApply) {
+            window.showToast?.('✨ Object selected — tap Remove (or tap more objects)');
+          }
+        } else if (cs.remove.tool === 'lasso') {
+          const ok = finalizeLassoSelection();
+          if (ok && !cs.remove.autoApply) {
+            window.showToast?.('✨ Object circled — tap Remove to erase');
+          }
+        } else {
+          scheduleRender();
+        }
         if (cs.remove.autoApply && cs.remove.hasMask) {
           triggerObjectRemove();
         }
@@ -4335,11 +5545,54 @@
     bindEnh('creativeEnhanceLipSlider',         'creativeEnhanceLipVal',         'lipTint',    '%', 'lip');
     bindEnh('creativeEnhanceHairSlider',        'creativeEnhanceHairVal',        'hairTint');
 
-    // Smart Remove Controls (Picsart MI-GAN AI + Working Clear & Undo)
-    document.getElementById('creativeRemoveSizeSlider')?.addEventListener('input', (e) => {
-      cs.remove.brushSize = parseInt(e.target.value, 10) || 30;
-      const v = document.getElementById('creativeRemoveSizeVal'); if (v) v.textContent = `${cs.remove.brushSize}px`;
+    // Smart Remove Controls (Magic Eraser + Precision Eraser ✨ + Canva Click Object + Circle/Lasso + Camouflage)
+    document.getElementById('creativeRemoveEngineSubnav')?.addEventListener('click', (e) => {
+      const engBtn = e.target.closest('[data-rm-engine]');
+      if (engBtn) {
+        cs.remove.engine = engBtn.dataset.rmEngine;
+        cs.remove.action = 'erase';
+        syncRemoveModeUI();
+        window.showToast?.(cs.remove.engine === 'precision'
+          ? '✨ Precision Eraser active (High-Res AI + Texture Synthesis + Shadow Removal)'
+          : '🪄 Magic Eraser active (Fast MI-GAN AI)');
+        return;
+      }
+      const actBtn = e.target.closest('[data-rm-action]');
+      if (actBtn) {
+        cs.remove.action = (cs.remove.action === 'camouflage') ? 'erase' : 'camouflage';
+        syncRemoveModeUI();
+        window.showToast?.(cs.remove.action === 'camouflage'
+          ? '🎨 Camouflage mode: mutes & blends distracting object colors into the scene'
+          : '✨ Erase mode active');
+      }
     });
+    document.getElementById('creativeRemoveToolSubnav')?.addEventListener('click', (e) => {
+      if (e.target.closest('#creativeRemoveAutoBtn')) {
+        cs.remove.autoApply = !cs.remove.autoApply;
+        syncRemoveModeUI();
+        window.showToast?.(cs.remove.autoApply ? '⚡ Instant Erase: On (erases automatically on release)' : 'Instant Erase: Off');
+        return;
+      }
+      const toolBtn = e.target.closest('[data-rm-tool]');
+      if (!toolBtn) return;
+      cs.remove.tool = toolBtn.dataset.rmTool;
+      syncRemoveModeUI();
+      if (cs.remove.tool === 'tap') {
+        window.showToast?.('👆 Click Object mode: tap any object to auto-select it');
+      } else if (cs.remove.tool === 'lasso') {
+        window.showToast?.('⭕ Circle mode: draw a quick loop around any object');
+      }
+    });
+    const rmSlider = document.getElementById('creativeRemoveSizeSlider');
+    if (rmSlider) {
+      rmSlider.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+      rmSlider.addEventListener('touchmove', (e) => e.stopPropagation(), { passive: true });
+      rmSlider.addEventListener('input', (e) => {
+        e.stopPropagation();
+        cs.remove.brushSize = parseInt(e.target.value, 10) || 30;
+        const v = document.getElementById('creativeRemoveSizeVal'); if (v) v.textContent = `${cs.remove.brushSize}px`;
+      });
+    }
     document.getElementById('creativeRemoveDownloadBtn')?.addEventListener('click', () => {
       if (!hasNativeObjectRemove()) return;
       if (cs.remove.modelStatus?.state === 'downloading') {
@@ -4654,6 +5907,7 @@
         } else if (toolName === 'text' || toolName === 'stickers') {
           syncSelectedLayerUI();
         } else if (toolName === 'remove') {
+          syncRemoveModeUI();
           refreshRemoveModelStatus();
         }
         updateFloatingControls();
@@ -4759,37 +6013,46 @@
     onRemoveResult(payload) {
       if (!payload || payload.id !== cs.remove.activeReqId) return;
       cs.remove.activeReqId = null;
-      cs.remove.busy = false;
-      const pendingSnap = cs.remove._pendingSnap;
-      cs.remove._pendingSnap = null;
-      updateRemoveAiBar();
+      const job = cs.remove._pendingJob;
+      if (!job || !cs.workCanvas) {
+        cs.remove.busy = false;
+        updateRemoveAiBar();
+        return;
+      }
 
-      if (payload.error || !payload.dataUrl) {
-        window.showToast?.(payload.error || 'AI removal failed — using fallback');
-        applyExemplarFallbackRemove();
+      const cluster = job.clusters[job.idx];
+      if (payload.timing?.inferenceMs) {
+        job.totalInferMs += payload.timing.inferenceMs;
+      }
+
+      if (payload.error || !payload.dataUrl || !cluster) {
+        // Fallback for this cluster using Precision Slant-Harmonic + Coherent PatchMatch HD
+        const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+        if (cluster) processClusterSynchronously(wCtx, cluster, job.isPrecision, false, null);
+        job.idx++;
+        dispatchNextClusterToNativeMigan();
         return;
       }
 
       loadImageFromUrl(payload.dataUrl).then((img) => {
-        if (!cs.workCanvas) return;
-        if (pendingSnap) {
-          cs.remove.undoStack.push(pendingSnap);
-          if (cs.remove.undoStack.length > 6) cs.remove.undoStack.shift();
-        }
-        const ctx = cs.workCanvas.getContext('2d');
-        ctx.clearRect(0, 0, cs.workCanvas.width, cs.workCanvas.height);
-        ctx.drawImage(img, 0, 0, cs.workCanvas.width, cs.workCanvas.height);
-        if (cs.remove.maskCanvas) {
-          cs.remove.maskCanvas.getContext('2d').clearRect(0, 0, cs.remove.maskCanvas.width, cs.remove.maskCanvas.height);
-        }
-        cs.remove.hasMask = false;
-        syncFastCanvasFromWork();
-        cs.enhance.dirty = true;
-        scheduleRender();
-        const ms = payload.timing?.inferenceMs;
-        window.showToast?.(ms ? `✨ Object removed with AI (${(ms / 1000).toFixed(1)}s)` : '✨ Object removed cleanly with AI!');
+        if (!cs.workCanvas || !cs.remove._pendingJob) return;
+        const { rw, rh } = cluster;
+        const tmpC = document.createElement('canvas');
+        tmpC.width = rw; tmpC.height = rh;
+        const tctx = tmpC.getContext('2d', { willReadFrequently: true });
+        tctx.drawImage(img, 0, 0, rw, rh);
+        const neuralPx = tctx.getImageData(0, 0, rw, rh).data;
+
+        const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+        processClusterSynchronously(wCtx, cluster, job.isPrecision, false, neuralPx);
+        job.idx++;
+        dispatchNextClusterToNativeMigan();
       }).catch(() => {
-        window.showToast?.('Could not apply AI removal result');
+        if (!cs.workCanvas || !cs.remove._pendingJob) return;
+        const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
+        if (cluster) processClusterSynchronously(wCtx, cluster, job.isPrecision, false, null);
+        job.idx++;
+        dispatchNextClusterToNativeMigan();
       });
     }
   };

@@ -2380,21 +2380,36 @@
               </div>
             </div>
 
-            <!-- Tool Panel: Smart Object Remove (Picsart MI-GAN AI On-Demand) -->
+            <!-- Tool Panel: Smart Object Remove (Magic Eraser + Precision Eraser AI & Canva/Google Selection Suite) -->
             <div class="studio-tool-panel" id="studioPanelRemove" style="display: none;">
               <div class="creative-panel-body">
+                <!-- Engine & Action Mode Selector: Magic Eraser (Standard) | Precision Eraser ✨ | Camouflage -->
+                <div class="studio-subnav-pills" id="creativeRemoveEngineSubnav">
+                  <button type="button" class="studio-subnav-btn" data-rm-engine="standard" id="creativeRemoveEngineStandardBtn" title="Fast AI Magic Eraser"><i class="fa-solid fa-wand-magic-sparkles"></i> <span>Magic Eraser</span></button>
+                  <button type="button" class="studio-subnav-btn active" data-rm-engine="precision" id="creativeRemoveEnginePrecisionBtn" title="High-Res Context AI + Texture Synthesis + Shadow Removal"><i class="fa-solid fa-sparkles"></i> <span>Precision Eraser</span></button>
+                  <button type="button" class="studio-subnav-btn" data-rm-action="camouflage" id="creativeRemoveCamouflageBtn" title="Google Magic Eraser Camouflage: blend distracting colors into background"><i class="fa-solid fa-eye-low-vision"></i> <span>Camouflage</span></button>
+                </div>
+
+                <!-- Canva & Google Magic Eraser Selection Tools: Brush | Click Object | Circle/Lasso | Instant Toggle -->
+                <div class="creative-rail" id="creativeRemoveToolSubnav">
+                  <button type="button" class="creative-pill-btn active" data-rm-tool="brush" id="creativeRemoveToolBrushBtn"><i class="fa-solid fa-paintbrush"></i> Brush</button>
+                  <button type="button" class="creative-pill-btn" data-rm-tool="tap" id="creativeRemoveToolTapBtn"><i class="fa-solid fa-hand-pointer"></i> Click Object</button>
+                  <button type="button" class="creative-pill-btn" data-rm-tool="lasso" id="creativeRemoveToolLassoBtn"><i class="fa-solid fa-draw-polygon"></i> Circle</button>
+                  <button type="button" class="creative-pill-btn" id="creativeRemoveAutoBtn" title="Automatically erase as soon as you lift your finger"><i class="fa-solid fa-bolt"></i> Instant: Off</button>
+                </div>
+
                 <div class="creative-remove-ai-bar" id="creativeRemoveAiBar">
-                  <span class="creative-remove-ai-status" id="creativeRemoveAiStatus"><i class="fa-solid fa-wand-magic-sparkles"></i> Brush object, then tap Remove</span>
+                  <span class="creative-remove-ai-status" id="creativeRemoveAiStatus"><i class="fa-solid fa-wand-magic-sparkles"></i> Brush, click, or circle object to remove</span>
                   <button type="button" class="creative-pill-btn" id="creativeRemoveDownloadBtn" style="display:none;padding:4px 9px;font-size:10px;"><i class="fa-solid fa-cloud-arrow-down"></i> Download AI (28 MB)</button>
                 </div>
                 <div class="creative-remove-progress" id="creativeRemoveProgress" style="display:none;">
                   <div class="creative-remove-progress-fill" id="creativeRemoveProgressFill"></div>
                 </div>
-                <div class="studio-slider-row">
+                <div class="studio-slider-row" id="creativeRemoveSizeRow">
                   <span class="studio-slider-label"><i class="fa-solid fa-eraser"></i> Brush Size</span>
                   <span class="studio-slider-value" id="creativeRemoveSizeVal">30px</span>
                 </div>
-                <input type="range" class="studio-slider" id="creativeRemoveSizeSlider" min="8" max="80" value="30">
+                <input type="range" class="studio-slider" id="creativeRemoveSizeSlider" min="8" max="90" value="30">
                 <div class="creative-inline-row">
                   <button type="button" class="creative-primary-btn" id="creativeRemoveApplyBtn"><i class="fa-solid fa-wand-magic-sparkles"></i> Remove</button>
                   <button type="button" class="creative-pill-btn" id="creativeRemoveUndoBtn"><i class="fa-solid fa-rotate-left"></i> Undo</button>
