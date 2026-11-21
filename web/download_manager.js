@@ -421,6 +421,15 @@
       const entries = registry[assetId];
       if (!entries || !entries.length) return false;
       if (!targetScope) return true;
+      if (window.isNativeIOS) {
+        return entries.some(e => {
+          const norm = String(e.exportLocation || '').replace(/^(Pictures|Movies|Music)\//, '').replace(/\/+$/, '');
+          if (targetScope === ROOT_FOLDER) {
+            return norm === ROOT_FOLDER || norm === '';
+          }
+          return e.sourceAlbumName === targetScope || norm === `${ROOT_FOLDER}/${targetScope}`;
+        });
+      }
       // If targetScope is provided, check if exported to that exact scope or album
       return entries.some(e => e.sourceAlbumName === targetScope || (e.exportLocation && e.exportLocation.includes(targetScope)));
     },
@@ -690,6 +699,58 @@
         const newPhotos = [], newAlbums = [];
         const registry = options.bypassDuplicateCheck ? null : Storage.getRegistry();
         const targetScope = sourceType === 'album' ? sanitizeAlbumName(options.albumName) : (sourceType === 'multi_album' ? 'Albums' : ROOT_FOLDER);
+
+        // On iOS, verify candidate registry entries against actual files on disk in
+        // Files › On My iPhone › PicShelf/ so deleted or legacy entries never falsely report "Already downloaded".
+        if (window.isNativeIOS && registry && typeof window.AndroidApp?.verifyDownloadedFiles === 'function') {
+          const candidateRefs = [];
+          const candidatePayload = [];
+          const seenAssets = new Set();
+          for (const group of groups) {
+            const photos = Array.isArray(group.photos) ? group.photos : [];
+            for (let index = 0; index < photos.length; index++) {
+              const photo = photos[index];
+              if (!valid(photo) || seenAssets.has(photo.id)) continue;
+              seenAssets.add(photo.id);
+              const entries = registry[photo.id];
+              if (!entries || !entries.length) continue;
+              for (let ei = 0; ei < entries.length; ei++) {
+                const e = entries[ei];
+                candidateRefs.push({ assetId: photo.id, entry: e });
+                candidatePayload.push({
+                  savedUri: e.savedUri || null,
+                  exportLocation: e.exportLocation || `${ROOT_FOLDER}/`,
+                  filename: e.filename || ''
+                });
+              }
+            }
+          }
+          if (candidatePayload.length > 0) {
+            try {
+              const verified = await window.AndroidApp.verifyDownloadedFiles(JSON.stringify(candidatePayload));
+              if (Array.isArray(verified) && verified.length === candidateRefs.length) {
+                const staleSet = new Set();
+                for (let vi = 0; vi < verified.length; vi++) {
+                  if (verified[vi] !== true) staleSet.add(candidateRefs[vi].entry);
+                }
+                if (staleSet.size > 0) {
+                  let mutated = false;
+                  for (const assetId of seenAssets) {
+                    const list = registry[assetId];
+                    if (!list || !list.length) continue;
+                    const kept = list.filter(e => !staleSet.has(e));
+                    if (kept.length !== list.length) {
+                      mutated = true;
+                      if (kept.length > 0) registry[assetId] = kept;
+                      else delete registry[assetId];
+                    }
+                  }
+                  if (mutated) Storage.flushRegistry();
+                }
+              }
+            } catch (_) {}
+          }
+        }
         for (const group of groups) {
           const fresh = [], scope = sourceType === 'multi_album' && group.albumName ? sanitizeAlbumName(group.albumName) : targetScope;
           const photos = Array.isArray(group.photos) ? group.photos : [];

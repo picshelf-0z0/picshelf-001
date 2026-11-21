@@ -1714,6 +1714,27 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 executeDownloadChunk: function(payloadJson) {
                     send('executeDownloadChunk', { payloadJson: typeof payloadJson === 'string' ? payloadJson : JSON.stringify(payloadJson || {}) });
                 },
+                verifyDownloadedFiles: function(itemsJson) {
+                    return new Promise(function(resolve) {
+                        var reqId = 'vdf_' + Date.now() + '_' + (++iosStreamSeq);
+                        window._iosVerifyCallbacks = window._iosVerifyCallbacks || {};
+                        var timer = setTimeout(function() {
+                            if (window._iosVerifyCallbacks && window._iosVerifyCallbacks[reqId]) {
+                                delete window._iosVerifyCallbacks[reqId];
+                                resolve(null);
+                            }
+                        }, 4000);
+                        window._iosVerifyCallbacks[reqId] = function(result) {
+                            clearTimeout(timer);
+                            if (window._iosVerifyCallbacks) delete window._iosVerifyCallbacks[reqId];
+                            resolve(result);
+                        };
+                        send('verifyDownloadedFiles', {
+                            requestId: reqId,
+                            itemsJson: typeof itemsJson === 'string' ? itemsJson : JSON.stringify(itemsJson || [])
+                        });
+                    });
+                },
                 resumeDownloadSession: function(sessionId) {
                     send('resumeDownloadSession', { sessionId: String(sessionId || '') });
                 },

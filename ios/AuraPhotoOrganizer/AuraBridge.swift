@@ -167,6 +167,12 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 executeDownloadChunk(payloadJson: payloadJson)
             }
 
+        case "verifyDownloadedFiles":
+            if let requestId = body["requestId"] as? String,
+               let itemsJson = body["itemsJson"] as? String {
+                verifyDownloadedFiles(requestId: requestId, itemsJson: itemsJson)
+            }
+
         case "resumeDownloadSession":
             if let sessionId = body["sessionId"] as? String {
                 downloadStateLock.lock()
@@ -1295,6 +1301,91 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         return (target, "Files › On My iPhone › \(displaySub)", albumTitle)
     }
 
+    private func resolveExportDirectoryReadOnly(relativePath: String) -> URL {
+        var cleaned = relativePath.replacingOccurrences(of: "\\", with: "/")
+        for prefix in ["Pictures/", "Movies/", "Music/"] {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+        if cleaned == "PicShelf" || cleaned == "PicShelf/" {
+            cleaned = ""
+        } else if cleaned.hasPrefix("PicShelf/") {
+            cleaned = String(cleaned.dropFirst("PicShelf/".count))
+        }
+        let segments = cleaned
+            .split(separator: "/")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "." && $0 != ".." }
+
+        var target = documentsRootDirectory()
+        for seg in segments {
+            target = target.appendingPathComponent(seg, isDirectory: true)
+        }
+        return target
+    }
+
+    private func verifyDownloadedFiles(requestId: String, itemsJson: String) {
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            let fm = FileManager.default
+            var flags: [Bool] = []
+            if let data = itemsJson.data(using: .utf8),
+               let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                flags.reserveCapacity(items.count)
+                for entry in items {
+                    var found = false
+                    let relPath = (entry["exportLocation"] as? String) ?? "PicShelf/"
+                    let dirURL = self.resolveExportDirectoryReadOnly(relativePath: relPath)
+
+                    func isNonEmptyFile(_ url: URL) -> Bool {
+                        var isDir: ObjCBool = false
+                        guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return false }
+                        if let attrs = try? fm.attributesOfItem(atPath: url.path),
+                           let sz = (attrs[.size] as? NSNumber)?.int64Value {
+                            return sz > 0
+                        }
+                        return true
+                    }
+
+                    if let savedUri = entry["savedUri"] as? String, !savedUri.isEmpty {
+                        if let u = URL(string: savedUri), u.isFileURL {
+                            if isNonEmptyFile(u) {
+                                found = true
+                            } else {
+                                // Handle iOS sandbox container UUID change across updates/reinstalls
+                                let uriName = u.lastPathComponent
+                                if !uriName.isEmpty && isNonEmptyFile(dirURL.appendingPathComponent(uriName)) {
+                                    found = true
+                                }
+                            }
+                        }
+                    }
+
+                    if !found, let rawName = entry["filename"] as? String, !rawName.isEmpty {
+                        let safeName = (rawName as NSString).lastPathComponent
+                        if !safeName.isEmpty && isNonEmptyFile(dirURL.appendingPathComponent(safeName)) {
+                            found = true
+                        }
+                    }
+                    flags.append(found)
+                }
+            }
+
+            let resData = (try? JSONSerialization.data(withJSONObject: flags, options: [])) ?? Data("[]".utf8)
+            let resJson = String(data: resData, encoding: .utf8) ?? "[]"
+            let reqData = (try? JSONSerialization.data(withJSONObject: [requestId], options: [])) ?? Data("[\"\"]".utf8)
+            let reqArr = String(data: reqData, encoding: .utf8) ?? "[\"\"]"
+
+            DispatchQueue.main.async { [weak self] in
+                self?.webView?.evaluateJavaScript(
+                    "if (window._iosVerifyCallbacks && window._iosVerifyCallbacks[(\(reqArr))[0]]) { window._iosVerifyCallbacks[(\(reqArr))[0]](\(resJson)); }",
+                    completionHandler: nil
+                )
+            }
+        }
+    }
+
     private func uniqueDestinationURL(in dirURL: URL, fileName: String) -> (url: URL, finalName: String) {
         let fm = FileManager.default
         let safeName = (fileName as NSString).lastPathComponent
@@ -1545,6 +1636,7 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                         "id": itemId,
                         "success": true,
                         "fileSize": writtenSize,
+                        "dateModified": Int(Date().timeIntervalSince1970),
                         "fileName": unique.finalName,
                         "displayPath": destInfo.displayPath,
                         "uri": dstURL.absoluteString,

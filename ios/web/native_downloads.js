@@ -213,7 +213,7 @@
           const pending = Promise.resolve(window.VideoDownloadHistory.record(item.receiptPhoto, item.receiptEdit, result)).catch(()=>{});
           receiptWrites.add(pending);pending.finally(()=>receiptWrites.delete(pending));
         }
-        storage.recordRegistryEntry({assetId:item.assetId,originalIdentifier:item.assetId,contentHash:'original:'+item.assetId+':'+item.fileSize,filename:item.filename,sourceType:session.sourceType,sourceAlbumId:item.sourceAlbumId,sourceAlbumName:item.sourceAlbumName,sessionId:session.sessionId,exportLocation:item.destination,exportTimestamp:Date.now(),fileSize:item.fileSize},false);
+        storage.recordRegistryEntry({assetId:item.assetId,originalIdentifier:item.assetId,contentHash:'original:'+item.assetId+':'+item.fileSize,filename:result.fileName||item.filename,savedUri:result.uri||null,sourceType:session.sourceType,sourceAlbumId:item.sourceAlbumId,sourceAlbumName:item.sourceAlbumName,sessionId:session.sessionId,exportLocation:item.destination,exportTimestamp:Date.now(),fileSize:item.fileSize},false);
       } else if(item.status==='failed')session.failedCount++;
       else if(item.status==='cancelled')session.cancelledCount++;
       delete item.receiptPhoto;delete item.receiptEdit;
