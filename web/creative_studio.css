@@ -585,6 +585,26 @@ body.light-mode .creative-remove-ai-status.ready {
   margin-bottom: 0;
   font-size: 11px;
 }
+.creative-slider-span2 {
+  grid-column: span 2;
+}
+.creative-slider-scroll {
+  max-height: 136px;
+  overflow-y: auto;
+  padding-right: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.creative-subnav-scroll {
+  overflow-x: auto !important;
+  flex-wrap: nowrap !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.creative-subnav-scroll::-webkit-scrollbar { display: none; }
+.creative-subnav-scroll .studio-subnav-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 
 /* Hint Pill for Remove / Draw */
 .creative-hint-line {

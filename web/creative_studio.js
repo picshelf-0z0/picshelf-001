@@ -206,10 +206,10 @@
       activeStroke: null
     },
 
-    // Enhance & Landmark-Guided Selfie Retouch state
+    // Enhance & Landmark-Guided Selfie Retouch + Glam Makeup + Nose Sculpt state
     enhance: {
       sub: 'preset',
-      preset: 'original', // 'original' | 'selfie' | 'hd' | '2x' | 'vivid' | 'portrait'
+      preset: 'original', // 'original' | 'selfie' | 'glam' | 'hd' | '2x' | 'vivid' | 'portrait'
       clarity: 0,
       smooth: 0,
       blemish: 0,
@@ -220,11 +220,27 @@
       teeth: 0,
       brighten: 0,
       glow: 0,
+      noseSlim: 0,
+      noseContour: 0,
+      faceSlim: 0,
+      eyeEnlarge: 0,
+      lipPlump: 0,
+      browStyle: 'original', // 'original' | 'arched' | 'soft_arch' | 'straight' | 'bold' | 'feathered'
+      browTint: 0,
+      browShape: 0,
+      browColor: '#3b2618',
+      mascara: 0,
+      eyeliner: 0,
+      eyeshadow: 0,
+      eyeshadowColor: '#b45309',
       cheekBlush: 0,
       cheekColor: '#f472b6',
       lipTint: 0,
       lipColor: '#e11d48',
-      makeupTarget: 'lip', // 'cheek' | 'lip' for Palette Studio shade rail
+      lipFinish: 'satin',    // 'sheer' | 'matte' | 'glaze' | 'satin'
+      hairTint: 0,
+      hairColor: '#9333ea',
+      makeupTarget: 'lip', // 'cheek' | 'lip' | 'shadow' for Palette Studio shade rail
       faces: null,   // null = not yet detected, [] = no face, [...] = native landmarks
       faceReqId: null,
       splitPos: 0.5,
@@ -474,10 +490,22 @@
   }
 
   // ==========================================================================
-  // Image Processing: Landmark-Guided Frequency Separation Selfie Retouch
+  // Image Processing: Landmark-Guided Frequency Separation Selfie Retouch,
+  // Eyebrow Styling/Color, Mascara/Eyeliner/Eyeshadow & Nose Sculpting
   // ==========================================================================
-  const CHEEK_SHADES = ['#f472b6', '#fb7185', '#fb923c', '#e879f9', '#d97706', '#f43f5e'];
-  const LIP_SHADES   = ['#e11d48', '#ec4899', '#be123c', '#f97316', '#9d174d', '#d97757'];
+  const CHEEK_SHADES  = ['#f472b6', '#fb7185', '#fb923c', '#e879f9', '#d97706', '#f43f5e'];
+  const LIP_SHADES    = ['#e11d48', '#ec4899', '#be123c', '#f97316', '#9d174d', '#d97757'];
+  const SHADOW_SHADES = ['#b45309', '#be185d', '#7c3aed', '#d97706', '#374151', '#c2410c'];
+  const BROW_SHADES   = ['#1c1917', '#3b2618', '#5c3a21', '#7c5333', '#a17a50', '#8b3a2b', '#4b5563'];
+  const HAIR_SHADES   = ['#1c1917', '#4a2c18', '#8b3a2b', '#d4a359', '#e88d9c', '#7f1d1d', '#9333ea', '#1d4ed8'];
+  const BROW_STYLES   = [
+    { id: 'original',  label: 'Natural' },
+    { id: 'arched',    label: 'High Arch' },
+    { id: 'soft_arch', label: 'Soft Arch' },
+    { id: 'straight',  label: 'Straight' },
+    { id: 'bold',      label: 'Bold Glam' },
+    { id: 'feathered', label: 'Feathered' }
+  ];
 
   function hexToRgb(hex) {
     const clean = String(hex || '#e11d48').replace('#', '');
@@ -525,7 +553,10 @@
       e.preset !== 'original' ||
       e.clarity > 0 || e.smooth > 0 || e.blemish > 0 || e.wrinkle > 0 || e.texture !== 0 ||
       e.underEye > 0 || e.eyes > 0 || e.teeth > 0 || e.brighten > 0 || e.glow > 0 ||
-      e.cheekBlush > 0 || e.lipTint > 0
+      e.noseSlim > 0 || e.noseContour > 0 || e.faceSlim > 0 || e.eyeEnlarge > 0 || e.lipPlump > 0 ||
+      e.browTint > 0 || (e.browStyle !== 'original' && e.browShape > 0) ||
+      e.mascara > 0 || e.eyeliner > 0 || e.eyeshadow > 0 ||
+      e.cheekBlush > 0 || e.lipTint > 0 || e.hairTint > 0
     );
   }
 
@@ -533,23 +564,54 @@
     const e = cs.enhance;
     let clarity = e.clarity, smooth = e.smooth, blemish = e.blemish, wrinkle = e.wrinkle;
     let texture = e.texture, underEye = e.underEye, eyes = e.eyes, teeth = e.teeth;
-    let brighten = e.brighten, glow = e.glow, cheekBlush = e.cheekBlush, lipTint = e.lipTint;
+    let brighten = e.brighten, glow = e.glow;
+    let noseSlim = e.noseSlim, noseContour = e.noseContour;
+    let faceSlim = e.faceSlim, eyeEnlarge = e.eyeEnlarge, lipPlump = e.lipPlump;
+    let browStyle = e.browStyle, browTint = e.browTint, browShape = e.browShape;
+    let mascara = e.mascara, eyeliner = e.eyeliner, eyeshadow = e.eyeshadow;
+    let cheekBlush = e.cheekBlush, lipTint = e.lipTint, hairTint = e.hairTint;
     let satBoost = 0, contrastBoost = 0;
 
     if (e.preset === 'selfie') {
-      // Instant "Perfect Your Selfie" studio formula!
+      // Instant "Perfect Your Selfie" studio formula
       smooth = Math.max(smooth, 54);
       blemish = Math.max(blemish, 64);
       wrinkle = Math.max(wrinkle, 42);
       underEye = Math.max(underEye, 48);
       eyes = Math.max(eyes, 38);
       teeth = Math.max(teeth, 32);
+      noseContour = Math.max(noseContour, 28);
       brighten = Math.max(brighten, 18);
       glow = Math.max(glow, 26);
       cheekBlush = Math.max(cheekBlush, 30);
       lipTint = Math.max(lipTint, 26);
       clarity = Math.max(clarity, 18);
       satBoost = 6;
+    } else if (e.preset === 'glam') {
+      // Full Glam Women's Beauty Preset: silky skin + mascara + winged liner + eyeshadow + arched brows + face/nose sculpt + blush + gloss!
+      smooth = Math.max(smooth, 64);
+      blemish = Math.max(blemish, 72);
+      wrinkle = Math.max(wrinkle, 48);
+      underEye = Math.max(underEye, 58);
+      eyes = Math.max(eyes, 50);
+      teeth = Math.max(teeth, 42);
+      faceSlim = Math.max(faceSlim, 22);
+      noseSlim = Math.max(noseSlim, 34);
+      noseContour = Math.max(noseContour, 52);
+      eyeEnlarge = Math.max(eyeEnlarge, 20);
+      lipPlump = Math.max(lipPlump, 18);
+      if (browStyle === 'original') browStyle = 'soft_arch';
+      browTint = Math.max(browTint, 46);
+      browShape = Math.max(browShape, 55);
+      mascara = Math.max(mascara, 68);
+      eyeliner = Math.max(eyeliner, 52);
+      eyeshadow = Math.max(eyeshadow, 42);
+      cheekBlush = Math.max(cheekBlush, 48);
+      lipTint = Math.max(lipTint, 56);
+      brighten = Math.max(brighten, 20);
+      glow = Math.max(glow, 32);
+      clarity = Math.max(clarity, 20);
+      satBoost = 8;
     } else if (e.preset === 'hd') {
       clarity = Math.max(clarity, 55); contrastBoost = 12; satBoost = 8;
     } else if (e.preset === '2x') {
@@ -559,11 +621,17 @@
     } else if (e.preset === 'portrait') {
       smooth = Math.max(smooth, 68); blemish = Math.max(blemish, 55); wrinkle = Math.max(wrinkle, 48);
       underEye = Math.max(underEye, 40); glow = Math.max(glow, 42); brighten = Math.max(brighten, 24);
+      noseContour = Math.max(noseContour, 25);
       texture = texture === 0 ? -18 : texture;
     }
     return {
       clarity, smooth, blemish, wrinkle, texture, underEye, eyes, teeth,
-      brighten, glow, cheekBlush, lipTint, satBoost, contrastBoost,
+      brighten, glow, noseSlim, noseContour, faceSlim, eyeEnlarge, lipPlump,
+      browStyle, browTint, browShape, browColor: e.browColor,
+      mascara, eyeliner, eyeshadow, eyeshadowColor: e.eyeshadowColor,
+      cheekBlush, lipTint, lipFinish: e.lipFinish || 'satin',
+      hairTint, hairColor: e.hairColor,
+      satBoost, contrastBoost,
       cheekColor: e.cheekColor, lipColor: e.lipColor
     };
   }
@@ -589,18 +657,662 @@
     return { x: sx / pts.length, y: sy / pts.length, w: maxX - minX, h: maxY - minY, maxY, minY };
   }
 
-  // Builds crisp feathered landmark region masks (skin protection, under-eye, eyes, teeth, lips, cheeks)
-  function buildFaceRegionMasks(w, h, faces) {
+  // Computes face-aligned coordinate frame (100% consistent across Android ML Kit & iOS Vision, even on tilted selfies!)
+  function computeFaceFrame(face, w, h) {
+    const b = face.bounds || { x: 0.2, y: 0.2, w: 0.6, h: 0.6 };
+    const le = polyCenter(face.leftEye, w, h);
+    const re = polyCenter(face.rightEye, w, h);
+    if (le && re) {
+      const imgLeft = le.x <= re.x ? le : re;
+      const imgRight = le.x <= re.x ? re : le;
+      const imgLeftPts = le.x <= re.x ? face.leftEye : face.rightEye;
+      const imgRightPts = le.x <= re.x ? face.rightEye : face.leftEye;
+      const dx = imgRight.x - imgLeft.x, dy = imgRight.y - imgLeft.y;
+      const interOcular = Math.max(18, Math.hypot(dx, dy));
+      const ux = dx / interOcular, uy = dy / interOcular; // viewer's left -> right
+      const vx = -uy, vy = ux;                           // forehead -> chin (downward)
+      const lb = polyCenter(face.leftEyebrow, w, h), rb = polyCenter(face.rightEyebrow, w, h);
+      let imgLeftBrow = face.leftEyebrow, imgRightBrow = face.rightEyebrow;
+      if (lb && rb && lb.x > rb.x) { imgLeftBrow = face.rightEyebrow; imgRightBrow = face.leftEyebrow; }
+      return {
+        imgLeft, imgRight, imgLeftPts, imgRightPts, imgLeftBrow, imgRightBrow,
+        eyeMidX: (imgLeft.x + imgRight.x) * 0.5,
+        eyeMidY: (imgLeft.y + imgRight.y) * 0.5,
+        interOcular, ux, uy, vx, vy, fw: b.w * w, fh: b.h * h, b
+      };
+    }
+    const fw = b.w * w, fh = b.h * h;
+    return {
+      imgLeft: null, imgRight: null, imgLeftPts: null, imgRightPts: null,
+      imgLeftBrow: face.leftEyebrow, imgRightBrow: face.rightEyebrow,
+      eyeMidX: (b.x + b.w * 0.5) * w, eyeMidY: (b.y + b.h * 0.4) * h,
+      interOcular: Math.max(20, fw * 0.42), ux: 1, uy: 0, vx: 0, vy: 1, fw, fh, b
+    };
+  }
+
+  function samplePolyline(pts, t) {
+    if (!pts || !pts.length) return [0, 0];
+    if (pts.length === 1) return pts[0];
+    const scaled = clamp(t, 0, 1) * (pts.length - 1);
+    const i = Math.min(pts.length - 2, Math.floor(scaled));
+    const f = scaled - i;
+    return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * f, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f];
+  }
+
+  // Extracts sorted upper & lower eyelid curves (inner corner -> outer corner) on both Android & iOS
+  function analyzeEyeArcs(eyePts, isImgLeft, frame, w, h) {
+    if (!eyePts || eyePts.length < 4) return null;
+    const { ux, uy, vx, vy } = frame;
+    // outX, outY points from inner tear duct -> outer temple corner
+    const outX = isImgLeft ? -ux : ux;
+    const outY = isImgLeft ? -uy : uy;
+    const raw = eyePts.map(p => [p[0] * w, p[1] * h]);
+    const proj = raw.map(([px, py]) => ({ x: px, y: py, s: px * outX + py * outY, d: px * vx + py * vy }));
+    let minS = Infinity, maxS = -Infinity, inner = proj[0], outer = proj[0];
+    for (const p of proj) {
+      if (p.s < minS) { minS = p.s; inner = p; }
+      if (p.s > maxS) { maxS = p.s; outer = p; }
+    }
+    const eyeW = Math.max(10, Math.hypot(outer.x - inner.x, outer.y - inner.y));
+    const spanS = Math.max(1, maxS - minS);
+    const upper = [inner], lower = [inner];
+    for (const p of proj) {
+      if (p === inner || p === outer) continue;
+      const t = (p.s - minS) / spanS;
+      const chordD = inner.d + (outer.d - inner.d) * t;
+      if (p.d <= chordD) upper.push(p);
+      else lower.push(p);
+    }
+    upper.push(outer);
+    lower.push(outer);
+    upper.sort((a, b) => a.s - b.s);
+    lower.sort((a, b) => a.s - b.s);
+    return {
+      inner: [inner.x, inner.y],
+      outer: [outer.x, outer.y],
+      upper: upper.map(p => [p.x, p.y]),
+      lower: lower.map(p => [p.x, p.y]),
+      eyeW, outX, outY
+    };
+  }
+
+  // Analyzes brow geometry into 9 inner->outer spine stations + target styled shape (handles both ML Kit polygons & Vision curves!)
+  function analyzeBrowCurve(browPts, eyeCenter, isImgLeft, frame, w, h, styleId, shapeAmt) {
+    if (!browPts || browPts.length < 3) return null;
+    const { ux, uy, vx, vy, interOcular } = frame;
+    const outX = isImgLeft ? -ux : ux;
+    const outY = isImgLeft ? -uy : uy;
+    const raw = browPts.map(p => {
+      const px = p[0] * w, py = p[1] * h;
+      return { x: px, y: py, s: px * outX + py * outY, d: px * vx + py * vy };
+    });
+    let minS = Infinity, maxS = -Infinity;
+    for (const p of raw) { if (p.s < minS) minS = p.s; if (p.s > maxS) maxS = p.s; }
+    const browLen = Math.max(14, maxS - minS);
+
+    const N = 9;
+    const origSpine = [];
+    const origThick = [];
+    let meanD = 0;
+    for (let k = 0; k < N; k++) {
+      const t = k / (N - 1);
+      const targetS = minS + t * browLen;
+      const band = browLen * 0.19;
+      let wSum = 0, dSum = 0, dMin = Infinity, dMax = -Infinity;
+      for (const p of raw) {
+        const dist = Math.abs(p.s - targetS);
+        if (dist <= band) {
+          const wt = 1 - dist / (band + 0.001);
+          wSum += wt; dSum += p.d * wt;
+          if (p.d < dMin) dMin = p.d;
+          if (p.d > dMax) dMax = p.d;
+        }
+      }
+      if (wSum <= 0) {
+        // Nearest point fallback
+        let best = raw[0], bd = Infinity;
+        for (const p of raw) { const dd = Math.abs(p.s - targetS); if (dd < bd) { bd = dd; best = p; } }
+        dSum = best.d; wSum = 1; dMin = best.d; dMax = best.d;
+      }
+      const cd = dSum / wSum;
+      meanD += cd;
+      // Reconstruct image-space (x, y) from orthogonal basis (out, v)
+      const cx = targetS * outX + cd * vx;
+      const cy = targetS * outY + cd * vy;
+      origSpine.push([cx, cy, targetS, cd]);
+      // Measured polygon half-thickness (or natural anatomical default for open Vision ridge curve)
+      const measured = (dMax - dMin) * 0.5;
+      const defaultT = interOcular * 0.052 * (1 - 0.58 * t * t);
+      origThick.push(Math.max(defaultT * 0.72, Math.min(interOcular * 0.09, measured > 2 ? measured : defaultT)));
+    }
+    meanD /= N;
+
+    // Compute styled target spine & thickness
+    const targetSpine = [];
+    const targetThick = [];
+    const liftUnit = interOcular * 0.092 * shapeAmt;
+    for (let k = 0; k < N; k++) {
+      const t = k / (N - 1);
+      const [ox, oy, os, od] = origSpine[k];
+      let deltaD = 0; // negative deltaD = LIFT UPWARD toward forehead!
+      let thickMul = 1.0;
+
+      if (styleId === 'arched') {
+        const archBell = Math.exp(-Math.pow((t - 0.64) / 0.22, 2));
+        deltaD = -liftUnit * 1.12 * archBell + liftUnit * 0.14 * Math.pow(t, 2.4);
+        thickMul = 1.0 - 0.16 * shapeAmt * t;
+      } else if (styleId === 'soft_arch') {
+        const archBell = Math.exp(-Math.pow((t - 0.56) / 0.28, 2));
+        deltaD = -liftUnit * 0.75 * archBell;
+        thickMul = 1.0 + 0.08 * shapeAmt * (1 - t);
+      } else if (styleId === 'straight') {
+        // Smoothly pull brow toward a sleek youthful straight horizontal line
+        const straightD = origSpine[0][3] + (origSpine[N - 1][3] - origSpine[0][3]) * t * 0.45;
+        deltaD = (straightD - od) * 0.65 * shapeAmt;
+        thickMul = 1.08 + 0.08 * shapeAmt;
+      } else if (styleId === 'bold') {
+        const archBell = Math.exp(-Math.pow((t - 0.62) / 0.25, 2));
+        deltaD = -liftUnit * 0.48 * archBell;
+        thickMul = 1.18 + 0.28 * shapeAmt * (1 - 0.35 * t);
+      } else if (styleId === 'feathered') {
+        const archBell = Math.exp(-Math.pow((t - 0.55) / 0.30, 2));
+        deltaD = -liftUnit * 0.42 * archBell;
+        thickMul = 1.12 + 0.22 * shapeAmt;
+      }
+
+      const nd = od + deltaD;
+      const nx = os * outX + nd * vx;
+      const ny = os * outY + nd * vy;
+      targetSpine.push([nx, ny, deltaD]);
+      // Always taper cleanly at the outer tail (t -> 1)
+      const tailTaper = t > 0.78 ? (1 - (t - 0.78) / 0.26) : 1.0;
+      targetThick.push(Math.max(1.5, origThick[k] * thickMul * clamp(tailTaper, 0.22, 1.0)));
+    }
+
+    const eyeTopD = eyeCenter ? (eyeCenter.x * vx + eyeCenter.y * vy - eyeCenter.h * 0.68) : (meanD + interOcular * 0.22);
+    return { origSpine, targetSpine, origThick, targetThick, browLen, outX, outY, vx, vy, eyeTopD };
+  }
+
+  // Analyzes nose bridge & nostril alare geometry consistently on Android & iOS
+  function analyzeNoseGeometry(face, frame, w, h) {
+    const { ux, uy, vx, vy, eyeMidX, eyeMidY, interOcular } = frame;
+    let topPt = [eyeMidX, eyeMidY + interOcular * 0.06];
+    let tipPt = [eyeMidX + vx * interOcular * 0.52, eyeMidY + vy * interOcular * 0.52];
+
+    if (face.noseBridge && face.noseBridge.length >= 2) {
+      const pts = face.noseBridge.map(p => [p[0] * w, p[1] * h]);
+      let minV = Infinity, maxV = -Infinity;
+      for (const p of pts) {
+        const vVal = p[0] * vx + p[1] * vy;
+        if (vVal < minV) { minV = vVal; topPt = p; }
+        if (vVal > maxV) { maxV = vVal; tipPt = p; }
+      }
+    }
+
+    let baseCenter = [tipPt[0] + vx * interOcular * 0.05, tipPt[1] + vy * interOcular * 0.05];
+    let halfW = interOcular * 0.25;
+    if (face.noseBottom && face.noseBottom.length >= 2) {
+      const pts = face.noseBottom.map(p => [p[0] * w, p[1] * h]);
+      let minU = Infinity, maxU = -Infinity, sx = 0, sy = 0;
+      for (const p of pts) {
+        const uVal = p[0] * ux + p[1] * uy;
+        if (uVal < minU) minU = uVal;
+        if (uVal > maxU) maxU = uVal;
+        sx += p[0]; sy += p[1];
+      }
+      baseCenter = [sx / pts.length, sy / pts.length];
+      halfW = clamp((maxU - minU) * 0.5, interOcular * 0.16, interOcular * 0.34);
+    }
+
+    const leftWing  = [baseCenter[0] - ux * halfW, baseCenter[1] - uy * halfW];
+    const rightWing = [baseCenter[0] + ux * halfW, baseCenter[1] + uy * halfW];
+    const midBridge = [(topPt[0] + tipPt[0]) * 0.5, (topPt[1] + tipPt[1]) * 0.5];
+    return { topPt, tipPt, midBridge, baseCenter, leftWing, rightWing, halfW, ux, uy, vx, vy, interOcular };
+  }
+
+  // Fast localized bilinear inverse-mapped Liquify for Face Slim (V-Line), Nose Slim, Eye Enlarge, Lip Plump & Eyebrow Arch!
+  // Only touches tight bounding boxes so it stays blazing fast on both Android & iOS!
+  function applyLocalBeautyWarps(srcData, w, h, faces, p) {
+    if (!Array.isArray(faces) || !faces.length) return srcData;
+    const doFace = p.faceSlim > 0;
+    const doNose = p.noseSlim > 0;
+    const doEye  = p.eyeEnlarge > 0;
+    const doLip  = p.lipPlump > 0;
+    const doBrow = p.browStyle !== 'original' && p.browShape > 0;
+    if (!doFace && !doNose && !doEye && !doLip && !doBrow) return srcData;
+
+    const dst = new Uint8ClampedArray(srcData);
+    const sampleBilinear = (sx, sy, outIdx) => {
+      const cx = clamp(sx, 0, w - 1.001), cy = clamp(sy, 0, h - 1.001);
+      const x0 = cx | 0, y0 = cy | 0;
+      const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+      const fx = cx - x0, fy = cy - y0;
+      const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+      const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4;
+      const i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+      dst[outIdx]     = (srcData[i00] * w00 + srcData[i10] * w10 + srcData[i01] * w01 + srcData[i11] * w11) | 0;
+      dst[outIdx + 1] = (srcData[i00 + 1] * w00 + srcData[i10 + 1] * w10 + srcData[i01 + 1] * w01 + srcData[i11 + 1] * w11) | 0;
+      dst[outIdx + 2] = (srcData[i00 + 2] * w00 + srcData[i10 + 2] * w10 + srcData[i01 + 2] * w01 + srcData[i11 + 2] * w11) | 0;
+    };
+
+    const warps = [];  // push handles: { cx, cy, r, dx, dy, clampD?, vx?, vy? }
+    const zooms = [];  // radial expand handles: { cx, cy, rx, ry, amt, axisX?, axisY?, vertOnly? }
+
+    for (const face of faces) {
+      const frame = computeFaceFrame(face, w, h);
+
+      // 1. Face Slim (YouCam V-Line Jawline Sculpt)
+      if (doFace) {
+        const s = p.faceSlim / 100;
+        const b = frame.b;
+        const fcx = (b.x + b.w * 0.5) * w;
+        const fcy = (b.y + b.h * 0.5) * h;
+        let ljX = (b.x + b.w * 0.10) * w, ljY = (b.y + b.h * 0.72) * h;
+        let rjX = (b.x + b.w * 0.90) * w, rjY = (b.y + b.h * 0.72) * h;
+        if (face.faceContour && face.faceContour.length >= 6) {
+          let lCnt = 0, lxS = 0, lyS = 0, rCnt = 0, rxS = 0, ryS = 0;
+          const yLo = (b.y + b.h * 0.52) * h, yHi = (b.y + b.h * 0.90) * h;
+          for (const pt of face.faceContour) {
+            const px = pt[0] * w, py = pt[1] * h;
+            if (py >= yLo && py <= yHi) {
+              if (px < fcx - frame.fw * 0.14) { lxS += px; lyS += py; lCnt++; }
+              else if (px > fcx + frame.fw * 0.14) { rxS += px; ryS += py; rCnt++; }
+            }
+          }
+          if (lCnt > 0) { ljX = lxS / lCnt; ljY = lyS / lCnt; }
+          if (rCnt > 0) { rjX = rxS / rCnt; rjY = ryS / rCnt; }
+        }
+        const jawR = frame.fw * 0.44;
+        const jawShift = frame.fw * 0.105 * s;
+        // Pull left & right jawline gracefully inward + very slightly upward toward V-line chin
+        warps.push({ cx: ljX, cy: ljY, r: jawR, dx:  frame.ux * jawShift, dy:  frame.uy * jawShift - frame.vy * jawShift * 0.14 });
+        warps.push({ cx: rjX, cy: rjY, r: jawR, dx: -frame.ux * jawShift, dy: -frame.uy * jawShift - frame.vy * jawShift * 0.14 });
+        // Also gentle lower-cheek taper
+        const chR = frame.fw * 0.34, chShift = frame.fw * 0.055 * s;
+        warps.push({ cx: ljX - frame.vx * frame.fh * 0.12, cy: ljY - frame.vy * frame.fh * 0.12, r: chR, dx:  frame.ux * chShift, dy:  frame.uy * chShift });
+        warps.push({ cx: rjX - frame.vx * frame.fh * 0.12, cy: rjY - frame.vy * frame.fh * 0.12, r: chR, dx: -frame.ux * chShift, dy: -frame.uy * chShift });
+      }
+
+      // 2. Nose Slimming: dual-focal smooth inward pull on nostrils + gentle mid-bridge refinement
+      if (doNose) {
+        const nose = analyzeNoseGeometry(face, frame, w, h);
+        const s = (p.noseSlim / 100);
+        const wingShift = nose.halfW * 0.25 * s;
+        const wingR = nose.halfW * 1.48;
+        warps.push({ cx: nose.leftWing[0],  cy: nose.leftWing[1],  r: wingR, dx:  nose.ux * wingShift, dy:  nose.uy * wingShift });
+        warps.push({ cx: nose.rightWing[0], cy: nose.rightWing[1], r: wingR, dx: -nose.ux * wingShift, dy: -nose.uy * wingShift });
+        const midR = nose.halfW * 1.15;
+        const midShift = nose.halfW * 0.10 * s;
+        warps.push({ cx: nose.midBridge[0] - nose.ux * nose.halfW * 0.65, cy: nose.midBridge[1] - nose.uy * nose.halfW * 0.65, r: midR, dx:  nose.ux * midShift, dy:  nose.uy * midShift });
+        warps.push({ cx: nose.midBridge[0] + nose.ux * nose.halfW * 0.65, cy: nose.midBridge[1] + nose.uy * nose.halfW * 0.65, r: midR, dx: -nose.ux * midShift, dy: -nose.uy * midShift });
+      }
+
+      // 3. Eye Enlarge (YouCam Big-Eye Radial Liquify centered on each eye!)
+      if (doEye) {
+        const amt = (p.eyeEnlarge / 100) * 0.24;
+        for (const ec of [frame.imgLeft, frame.imgRight]) {
+          if (!ec) continue;
+          const r = Math.max(14, ec.w * 0.88);
+          zooms.push({ cx: ec.x, cy: ec.y, rx: r, ry: r, amt, vertOnly: false });
+        }
+      }
+
+      // 4. Lip Plump (YouCam Fuller Lips vertical elliptical expand!)
+      if (doLip && face.outerLips && face.outerLips.length >= 3) {
+        const mc = polyCenter(face.outerLips, w, h);
+        if (mc) {
+          zooms.push({
+            cx: mc.x, cy: mc.y,
+            rx: Math.max(16, mc.w * 0.68),
+            ry: Math.max(12, mc.h * 1.42),
+            amt: (p.lipPlump / 100) * 0.25,
+            vertOnly: true, vx: frame.vx, vy: frame.vy
+          });
+        }
+      }
+
+      // 5. Eyebrow Style Reshaping: smooth vertical Gaussian lift/straighten clamped strictly above eyelids!
+      if (doBrow) {
+        const shapeAmt = p.browShape / 100;
+        const pairs = [
+          [frame.imgLeftBrow, frame.imgLeft, true],
+          [frame.imgRightBrow, frame.imgRight, false]
+        ];
+        for (const [bPts, eyeC, isLeft] of pairs) {
+          const brow = analyzeBrowCurve(bPts, eyeC, isLeft, frame, w, h, p.browStyle, shapeAmt);
+          if (!brow) continue;
+          const r = Math.max(10, brow.browLen * 0.34);
+          for (let k = 1; k < brow.targetSpine.length - 1; k += 2) {
+            const deltaD = brow.targetSpine[k][2];
+            if (Math.abs(deltaD) < 0.4) continue;
+            warps.push({
+              cx: brow.origSpine[k][0],
+              cy: brow.origSpine[k][1],
+              r,
+              dx: brow.vx * deltaD,
+              dy: brow.vy * deltaD,
+              clampD: brow.eyeTopD,
+              vx: brow.vx,
+              vy: brow.vy
+            });
+          }
+        }
+      }
+    }
+
+    if (!warps.length && !zooms.length) return srcData;
+
+    // Compute union bounding box of all active warps & zooms for maximum speed
+    let bx0 = w, by0 = h, bx1 = 0, by1 = 0;
+    for (const wp of warps) {
+      bx0 = Math.min(bx0, Math.floor(wp.cx - wp.r));
+      by0 = Math.min(by0, Math.floor(wp.cy - wp.r));
+      bx1 = Math.max(bx1, Math.ceil(wp.cx + wp.r));
+      by1 = Math.max(by1, Math.ceil(wp.cy + wp.r));
+    }
+    for (const zm of zooms) {
+      bx0 = Math.min(bx0, Math.floor(zm.cx - zm.rx));
+      by0 = Math.min(by0, Math.floor(zm.cy - zm.ry));
+      bx1 = Math.max(bx1, Math.ceil(zm.cx + zm.rx));
+      by1 = Math.max(by1, Math.ceil(zm.cy + zm.ry));
+    }
+    bx0 = clamp(bx0, 0, w - 1); by0 = clamp(by0, 0, h - 1);
+    bx1 = clamp(bx1, 0, w - 1); by1 = clamp(by1, 0, h - 1);
+
+    for (let y = by0; y <= by1; y++) {
+      for (let x = bx0; x <= bx1; x++) {
+        let offX = 0, offY = 0;
+        for (let k = 0; k < warps.length; k++) {
+          const wp = warps[k];
+          const rx = x - wp.cx, ry = y - wp.cy;
+          const d2 = rx * rx + ry * ry;
+          const r2 = wp.r * wp.r;
+          if (d2 >= r2) continue;
+          let fall = 1 - d2 / r2;
+          fall = fall * fall;
+          if (wp.clampD != null) {
+            const curD = x * wp.vx + y * wp.vy;
+            if (curD >= wp.clampD) continue;
+            const guard = clamp((wp.clampD - curD) / (wp.r * 0.45), 0, 1);
+            fall *= guard;
+          }
+          offX -= wp.dx * fall;
+          offY -= wp.dy * fall;
+        }
+        for (let k = 0; k < zooms.length; k++) {
+          const zm = zooms[k];
+          const rx = x - zm.cx, ry = y - zm.cy;
+          const nx = rx / zm.rx, ny = ry / zm.ry;
+          const d2 = nx * nx + ny * ny;
+          if (d2 >= 1) continue;
+          let fall = 1 - d2;
+          fall = fall * fall;
+          if (zm.vertOnly) {
+            // Plump vertically along face axis (vx, vy)
+            const vProj = rx * zm.vx + ry * zm.vy;
+            offX -= zm.vx * vProj * zm.amt * fall;
+            offY -= zm.vy * vProj * zm.amt * fall;
+          } else {
+            offX -= rx * zm.amt * fall;
+            offY -= ry * zm.amt * fall;
+          }
+        }
+        if (Math.abs(offX) > 0.08 || Math.abs(offY) > 0.08) {
+          sampleBilinear(x + offX, y + offY, (y * w + x) * 4);
+        }
+      }
+    }
+    return dst;
+  }
+
+  // Adaptive color-aware Hair Mask for YouCam Hair Color Changer (excludes face skin & background cleanly!)
+  function buildHairColorMask(orig, w, h, faces, skinMaskData) {
+    if (!Array.isArray(faces) || !faces.length) return null;
+    const rawMask = new Uint8ClampedArray(w * h * 4);
+
+    // Sample corner background colors to protect backdrop from tinting
+    const bgSamples = [];
+    const samplePts = [[4, 4], [w - 5, 4], [4, Math.floor(h * 0.28)], [w - 5, Math.floor(h * 0.28)]];
+    for (const [bx, by] of samplePts) {
+      const i = (clamp(by, 0, h - 1) * w + clamp(bx, 0, w - 1)) * 4;
+      bgSamples.push([orig[i], orig[i + 1], orig[i + 2]]);
+    }
+
+    for (const face of faces) {
+      const b = face.bounds || { x: 0.2, y: 0.2, w: 0.6, h: 0.6 };
+      const fw = b.w * w, fh = b.h * h;
+      const cx = (b.x + b.w * 0.5) * w;
+      const topFaceY = b.y * h;
+      const botFaceY = (b.y + b.h) * h;
+
+      // Sample dominant crown hair color directly above the forehead (excluding background-like pixels)
+      let hrSum = 0, hgSum = 0, hbSum = 0, hCnt = 0;
+      const crownY0 = clamp(Math.floor(topFaceY - fh * 0.32), 0, h - 1);
+      const crownY1 = clamp(Math.floor(topFaceY - fh * 0.02), 0, h - 1);
+      const crownX0 = clamp(Math.floor(cx - fw * 0.38), 0, w - 1);
+      const crownX1 = clamp(Math.floor(cx + fw * 0.38), 0, w - 1);
+      for (let y = crownY0; y <= crownY1; y += 2) {
+        for (let x = crownX0; x <= crownX1; x += 2) {
+          const i = (y * w + x) * 4;
+          const r = orig[i], g = orig[i + 1], bl = orig[i + 2];
+          if (skinMaskData && skinMaskData[i + 3] > 60) continue;
+          if (skinProbability(r, g, bl) > 0.65) continue;
+          let minBg = 999;
+          for (const bg of bgSamples) {
+            const d = Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(bl - bg[2]);
+            if (d < minBg) minBg = d;
+          }
+          if (minBg < 36) continue;
+          hrSum += r; hgSum += g; hbSum += bl; hCnt++;
+        }
+      }
+      if (hCnt < 6) continue;
+      const hR = hrSum / hCnt, hG = hgSum / hCnt, hB = hbSum / hCnt;
+
+      // Anatomical head + flowing hair envelope around the detected face
+      const envCy = topFaceY + fh * 0.34;
+      const envRx = fw * 1.18;
+      const envRy = fh * 1.12;
+      const x0 = clamp(Math.floor(cx - envRx), 0, w - 1);
+      const x1 = clamp(Math.ceil(cx + envRx), 0, w - 1);
+      const y0 = clamp(Math.floor(topFaceY - fh * 0.65), 0, h - 1);
+      const y1 = clamp(Math.ceil(botFaceY + fh * 0.58), 0, h - 1);
+
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const ex = (x - cx) / envRx;
+          const ey = (y - envCy) / envRy;
+          const ed2 = ex * ex + ey * ey;
+          if (ed2 >= 1.0) continue;
+          const i = (y * w + x) * 4;
+          // Strictly protect the entire face mask (forehead, cheeks, eyes, beard inside faceContour)
+          const faceProt = skinMaskData ? (skinMaskData[i + 3] / 255) : 0;
+          if (faceProt > 0.55) continue;
+          const r = orig[i], g = orig[i + 1], bl = orig[i + 2];
+          if (skinProbability(r, g, bl) > 0.52) continue;
+
+          // Distance to sampled hair color vs background corner color
+          const dHair = Math.hypot(r - hR, g - hG, bl - hB);
+          if (dHair > 95) continue;
+          let minBg = 999;
+          for (const bg of bgSamples) {
+            const d = Math.hypot(r - bg[0], g - bg[1], bl - bg[2]);
+            if (d < minBg) minBg = d;
+          }
+          if (minBg < 34) continue;
+
+          const hairSim = clamp(1 - dHair / 95, 0, 1);
+          const bgSep = clamp((minBg - 30) / 48, 0, 1);
+          const envW = clamp((1 - ed2) * 1.6, 0, 1);
+          const wAlpha = Math.round(hairSim * bgSep * envW * (1 - faceProt) * 255);
+          if (wAlpha > rawMask[i + 3]) {
+            rawMask[i] = rawMask[i + 1] = rawMask[i + 2] = wAlpha;
+            rawMask[i + 3] = wAlpha;
+          }
+        }
+      }
+    }
+    return boxBlurRGBA(rawMask, w, h, Math.max(2, Math.round(Math.min(w, h) / 220)));
+  }
+
+  // Procedural photorealistic Mascara (tightline + 26 fanned curved lashes) & Winged Eyeliner
+  function drawMascaraAndEyeliner(ctx, faces, w, h, p) {
+    if (!Array.isArray(faces) || !faces.length) return;
+    const mascaraAmt = p.mascara / 100;
+    const linerAmt = p.eyeliner / 100;
+    if (mascaraAmt <= 0 && linerAmt <= 0) return;
+
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const octx = off.getContext('2d');
+
+    for (const face of faces) {
+      const frame = computeFaceFrame(face, w, h);
+      const upX = -frame.vx, upY = -frame.vy;
+      const eyes = [
+        [frame.imgLeftPts, true],
+        [frame.imgRightPts, false]
+      ];
+      for (const [eyePts, isImgLeft] of eyes) {
+        const arc = analyzeEyeArcs(eyePts, isImgLeft, frame, w, h);
+        if (!arc || arc.upper.length < 3) continue;
+        const { upper, lower, eyeW, outX, outY } = arc;
+
+        // 1. Sleek Tapered Winged Eyeliner along upper eyelid + cat-eye flick
+        if (linerAmt > 0) {
+          octx.save();
+          const steps = 18;
+          const topEdge = [], botEdge = [];
+          for (let i = 0; i <= steps; i++) {
+            const t = 0.04 + (i / steps) * 0.96;
+            const [px, py] = samplePolyline(upper, t);
+            const thick = eyeW * (0.014 + 0.062 * Math.pow(t, 1.35)) * (0.55 + 0.45 * linerAmt);
+            topEdge.push([px + upX * thick, py + upY * thick]);
+            botEdge.push([px - upX * (thick * 0.25), py - upY * (thick * 0.25)]);
+          }
+          // Cat-eye wing extending cleanly outward & slightly upward toward outer brow tail!
+          const outerPt = upper[upper.length - 1];
+          const wingLen = eyeW * (0.14 + 0.16 * linerAmt);
+          const wingTipX = outerPt[0] + (outX * 0.86 + upX * 0.51) * wingLen;
+          const wingTipY = outerPt[1] + (outY * 0.86 + upY * 0.51) * wingLen;
+
+          octx.filter = `blur(${Math.max(0.5, eyeW * 0.012).toFixed(2)}px)`;
+          octx.fillStyle = `rgba(14, 12, 16, ${(0.88 * linerAmt).toFixed(3)})`;
+          octx.beginPath();
+          octx.moveTo(topEdge[0][0], topEdge[0][1]);
+          for (let i = 1; i < topEdge.length; i++) octx.lineTo(topEdge[i][0], topEdge[i][1]);
+          octx.lineTo(wingTipX, wingTipY);
+          for (let i = botEdge.length - 1; i >= 0; i--) octx.lineTo(botEdge[i][0], botEdge[i][1]);
+          octx.closePath();
+          octx.fill();
+          octx.restore();
+        }
+
+        // 2. Mascara: Soft Tightline Lash Root + 26 Organic Fanned Curved Eyelashes + Lower Wisps
+        if (mascaraAmt > 0) {
+          octx.save();
+          octx.filter = `blur(${Math.max(0.4, eyeW * 0.008).toFixed(2)}px)`;
+          octx.lineCap = 'round';
+
+          // Soft tightline root base so lashes anchor naturally into the eyelid margin
+          octx.strokeStyle = `rgba(18, 14, 16, ${(0.62 * mascaraAmt).toFixed(3)})`;
+          octx.lineWidth = Math.max(1.0, eyeW * 0.036 * (0.6 + 0.4 * mascaraAmt));
+          octx.beginPath();
+          const p0 = samplePolyline(upper, 0.08);
+          octx.moveTo(p0[0], p0[1]);
+          for (let k = 1; k <= 12; k++) {
+            const pt = samplePolyline(upper, 0.08 + (k / 12) * 0.90);
+            octx.lineTo(pt[0], pt[1]);
+          }
+          octx.stroke();
+
+          // 26 individual curved tapered upper eyelashes (fanned naturally from inner -> outer cat-eye sweep!)
+          const numLashes = 26;
+          for (let i = 0; i < numLashes; i++) {
+            const t = 0.08 + (i / (numLashes - 1)) * 0.91;
+            const [rx, ry] = samplePolyline(upper, t);
+            // Deterministic organic variation so lashes look fluttery, never mechanical
+            const jitter = 0.84 + 0.32 * Math.abs(Math.sin(i * 12.9898 + 4.14));
+            const fanOut = -0.18 + t * 0.88; // slight inward tilt near inner corner -> winged sweep at outer!
+            let dirX = upX + outX * fanOut;
+            let dirY = upY + outY * fanOut;
+            const dl = Math.hypot(dirX, dirY) || 1;
+            dirX /= dl; dirY /= dl;
+
+            const env = Math.pow(Math.sin(t * Math.PI), 0.65) * 0.72 + t * t * 0.52;
+            const lashLen = eyeW * (0.08 + 0.22 * env) * jitter * (0.55 + 0.45 * mascaraAmt);
+
+            // Slight upward curl on quadratic Bézier control point
+            const cpx = rx + (dirX * 0.55 - outX * 0.06) * lashLen;
+            const cpy = ry + (dirY * 0.55 - outY * 0.06) * lashLen;
+            const tx = rx + dirX * lashLen;
+            const ty = ry + dirY * lashLen;
+
+            // Draw tapered triangular-curved lash fiber (thicker at root, wispy fine tip)
+            const rootHalf = Math.max(0.45, eyeW * (0.011 + 0.008 * t) * (0.65 + 0.35 * mascaraAmt));
+            const perpX = -dirY * rootHalf, perpY = dirX * rootHalf;
+            octx.fillStyle = `rgba(15, 12, 15, ${(clamp(0.48 + 0.42 * t, 0.35, 0.9) * mascaraAmt).toFixed(3)})`;
+            octx.beginPath();
+            octx.moveTo(rx - perpX, ry - perpY);
+            octx.quadraticCurveTo(cpx, cpy, tx, ty);
+            octx.quadraticCurveTo(cpx + perpX * 0.35, cpy + perpY * 0.35, rx + perpX, ry + perpY);
+            octx.closePath();
+            octx.fill();
+          }
+
+          // Subtle wispy lower outer-corner lashes
+          if (lower.length >= 3) {
+            const nLow = 9;
+            octx.strokeStyle = `rgba(22, 18, 22, ${(0.32 * mascaraAmt).toFixed(3)})`;
+            octx.lineWidth = Math.max(0.6, eyeW * 0.012);
+            for (let i = 0; i < nLow; i++) {
+              const t = 0.52 + (i / (nLow - 1)) * 0.42;
+              const [rx, ry] = samplePolyline(lower, t);
+              const lLen = eyeW * (0.055 + 0.045 * t) * (0.55 + 0.45 * mascaraAmt);
+              const dx = (-upX * 0.85 + outX * 0.52) * lLen;
+              const dy = (-upY * 0.85 + outY * 0.52) * lLen;
+              octx.beginPath();
+              octx.moveTo(rx, ry);
+              octx.lineTo(rx + dx, ry + dy);
+              octx.stroke();
+            }
+          }
+          octx.restore();
+        }
+      }
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.drawImage(off, 0, 0);
+    ctx.restore();
+  }
+
+  // Builds crisp feathered landmark region masks (skin protection, under-eye, eyes, teeth, lips, cheeks, brows, eyeshadow, nose)
+  function buildFaceRegionMasks(w, h, faces, p) {
     if (!Array.isArray(faces) || !faces.length) return null;
     const makeMask = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
     const skinC = makeMask(), underEyeC = makeMask(), eyeC = makeMask(), teethC = makeMask(), lipC = makeMask(), cheekC = makeMask(), hiCheekC = makeMask();
     const sCtx = skinC.getContext('2d'), uCtx = underEyeC.getContext('2d'), eCtx = eyeC.getContext('2d');
     const tCtx = teethC.getContext('2d'), lCtx = lipC.getContext('2d'), chCtx = cheekC.getContext('2d'), hiCtx = hiCheekC.getContext('2d');
 
+    const needBrow = p && (p.browTint > 0 || (p.browStyle !== 'original' && p.browShape > 0));
+    const needShadow = p && p.eyeshadow > 0;
+    const needNose = p && p.noseContour > 0;
+    const browC = needBrow ? makeMask() : null;
+    const shadowC = needShadow ? makeMask() : null;
+    const noseShC = needNose ? makeMask() : null;
+    const noseHiC = needNose ? makeMask() : null;
+    const bCtx = browC ? browC.getContext('2d') : null;
+    const shCtx = shadowC ? shadowC.getContext('2d') : null;
+    const nsCtx = noseShC ? noseShC.getContext('2d') : null;
+    const nhCtx = noseHiC ? noseHiC.getContext('2d') : null;
+
     const unit = Math.min(w, h) / 600;
     for (const f of faces) {
       const b = f.bounds || { x: 0.2, y: 0.2, w: 0.6, h: 0.6 };
       const fw = b.w * w, fh = b.h * h;
+      const frame = computeFaceFrame(f, w, h);
 
       // 1. Face Skin Mask (face contour MINUS eyes, eyebrows, lips!)
       sCtx.save();
@@ -702,7 +1414,6 @@
         chCtx.arc(cx, cy, cheekR, 0, Math.PI * 2);
         chCtx.fill();
 
-        // Subtle champagne highlighter glow just above the blush on the cheekbone
         const hy = cy - cheekR * 0.38;
         const hr = cheekR * 0.72;
         const hg = hiCtx.createRadialGradient(cx, hy, hr * 0.08, cx, hy, hr);
@@ -713,6 +1424,159 @@
         hiCtx.arc(cx, hy, hr, 0, Math.PI * 2);
         hiCtx.fill();
       }
+
+      // 5. Styled Eyebrow Mask (Ombre Soft Fill + Micro-Bladed Hair Strokes!)
+      if (bCtx) {
+        const shapeAmt = (p.browShape || 0) / 100;
+        const pairs = [
+          [frame.imgLeftBrow, frame.imgLeft, true],
+          [frame.imgRightBrow, frame.imgRight, false]
+        ];
+        for (const [bPts, eyeC, isLeft] of pairs) {
+          const brow = analyzeBrowCurve(bPts, eyeC, isLeft, frame, w, h, p.browStyle, shapeAmt);
+          if (!brow) continue;
+          const { targetSpine, targetThick, outX, outY, vx, vy, browLen } = brow;
+          const N = targetSpine.length;
+          const upperPts = [], lowerPts = [];
+          for (let k = 0; k < N; k++) {
+            const [cx, cy] = targetSpine[k];
+            const th = targetThick[k];
+            upperPts.push([cx - vx * th, cy - vy * th]);
+            lowerPts.push([cx + vx * th, cy + vy * th]);
+          }
+          // Soft ombre base fill (lighter at inner head -> richer through arch & tail!)
+          bCtx.save();
+          bCtx.filter = `blur(${Math.max(1.2, browLen * 0.032).toFixed(1)}px)`;
+          const headPt = targetSpine[0], tailPt = targetSpine[N - 1];
+          const bg = bCtx.createLinearGradient(headPt[0], headPt[1], tailPt[0], tailPt[1]);
+          bg.addColorStop(0, 'rgba(255,255,255,0.42)');
+          bg.addColorStop(0.24, 'rgba(255,255,255,0.88)');
+          bg.addColorStop(0.82, 'rgba(255,255,255,0.92)');
+          bg.addColorStop(1, 'rgba(255,255,255,0.58)');
+          bCtx.fillStyle = bg;
+          bCtx.beginPath();
+          bCtx.moveTo(upperPts[0][0], upperPts[0][1]);
+          for (let k = 1; k < N; k++) bCtx.lineTo(upperPts[k][0], upperPts[k][1]);
+          for (let k = N - 1; k >= 0; k--) bCtx.lineTo(lowerPts[k][0], lowerPts[k][1]);
+          bCtx.closePath();
+          bCtx.fill();
+
+          // Directional micro-hair strokes for authentic microbladed / feathered brow realism!
+          bCtx.filter = 'none';
+          const hairCount = p.browStyle === 'feathered' ? 32 : 24;
+          const hairAlpha = p.browStyle === 'feathered' ? 0.55 : (p.browStyle === 'bold' ? 0.48 : 0.34);
+          bCtx.strokeStyle = `rgba(255,255,255,${hairAlpha})`;
+          bCtx.lineCap = 'round';
+          bCtx.lineWidth = Math.max(0.8, browLen * 0.014);
+          const spPts = targetSpine.map(s => [s[0], s[1]]);
+          for (let hi = 0; hi < hairCount; hi++) {
+            const t = 0.04 + (hi / (hairCount - 1)) * 0.90;
+            const [mx, my] = samplePolyline(spPts, t);
+            const idx = Math.min(N - 1, Math.round(t * (N - 1)));
+            const th = targetThick[idx] * (p.browStyle === 'feathered' ? 1.25 : 0.95);
+            // Hairs stand upward at head (t=0) and sweep diagonally outward along arch/tail (t=1)
+            const sweep = 0.25 + t * 1.15;
+            const sx = mx + vx * th * 0.72 - outX * th * 0.25;
+            const sy = my + vy * th * 0.72 - outY * th * 0.25;
+            const ex = mx - vx * th * 0.95 + outX * th * sweep;
+            const ey = my - vy * th * 0.95 + outY * th * sweep;
+            bCtx.beginPath();
+            bCtx.moveTo(sx, sy);
+            bCtx.lineTo(ex, ey);
+            bCtx.stroke();
+          }
+          bCtx.restore();
+        }
+      }
+
+      // 6. Feathered Upper-Lid Eyeshadow Mask (eye sclera strictly punched out!)
+      if (shCtx) {
+        const upX = -frame.vx, upY = -frame.vy;
+        for (const [eyePts, isImgLeft] of [[frame.imgLeftPts, true], [frame.imgRightPts, false]]) {
+          const arc = analyzeEyeArcs(eyePts, isImgLeft, frame, w, h);
+          if (!arc || arc.upper.length < 3) continue;
+          const { upper, eyeW, outX, outY } = arc;
+          shCtx.save();
+          shCtx.filter = `blur(${Math.max(4, Math.round(eyeW * 0.16))}px)`;
+          const topArc = [], botArc = [];
+          const steps = 14;
+          for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const [px, py] = samplePolyline(upper, t);
+            // Lifted smoky crease: fuller & softly winged toward outer corner!
+            const lift = eyeW * (0.14 + 0.24 * Math.sin(t * Math.PI) + 0.16 * t * t);
+            const wingOut = t > 0.7 ? eyeW * 0.14 * ((t - 0.7) / 0.3) : 0;
+            topArc.push([px + upX * lift + outX * wingOut, py + upY * lift + outY * wingOut]);
+            botArc.push([px - upX * (eyeW * 0.02), py - upY * (eyeW * 0.02)]);
+          }
+          const innerP = upper[0], outerP = upper[upper.length - 1];
+          const sg = shCtx.createLinearGradient(innerP[0], innerP[1], outerP[0], outerP[1]);
+          sg.addColorStop(0, 'rgba(255,255,255,0.28)');
+          sg.addColorStop(0.55, 'rgba(255,255,255,0.78)');
+          sg.addColorStop(1, 'rgba(255,255,255,0.92)');
+          shCtx.fillStyle = sg;
+          shCtx.beginPath();
+          shCtx.moveTo(topArc[0][0], topArc[0][1]);
+          for (let i = 1; i < topArc.length; i++) shCtx.lineTo(topArc[i][0], topArc[i][1]);
+          for (let i = botArc.length - 1; i >= 0; i--) shCtx.lineTo(botArc[i][0], botArc[i][1]);
+          shCtx.closePath();
+          shCtx.fill();
+          // Strictly protect the eye itself so eyeshadow NEVER tints the eyeball!
+          shCtx.globalCompositeOperation = 'destination-out';
+          shCtx.filter = `blur(${Math.max(1, Math.round(eyeW * 0.04))}px)`;
+          if (tracePoly(shCtx, eyePts, w, h)) shCtx.fill();
+          shCtx.restore();
+        }
+      }
+
+      // 7. Nose Sculpting: Lateral Contour Shadows + Luminous Bridge & Tip Highlight!
+      if (nsCtx && nhCtx) {
+        const nose = analyzeNoseGeometry(f, frame, w, h);
+        const { topPt, tipPt, ux, uy, interOcular } = nose;
+        const sideOff = interOcular * 0.145;
+        const blurN = Math.max(3, Math.round(interOcular * 0.075));
+
+        // Left & right lateral nasal-wall contour ribbons
+        nsCtx.save();
+        nsCtx.filter = `blur(${blurN}px)`;
+        nsCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+        nsCtx.lineCap = 'round';
+        nsCtx.lineWidth = Math.max(3, interOcular * 0.075);
+        for (const sign of [-1, 1]) {
+          const sx0 = topPt[0] + ux * sideOff * sign * 1.05;
+          const sy0 = topPt[1] + uy * sideOff * sign * 1.05;
+          const sx1 = tipPt[0] + ux * sideOff * sign * 0.92;
+          const sy1 = tipPt[1] + uy * sideOff * sign * 0.92;
+          nsCtx.beginPath();
+          nsCtx.moveTo(sx0, sy0);
+          nsCtx.lineTo(sx1, sy1);
+          nsCtx.stroke();
+        }
+        nsCtx.restore();
+
+        // Narrow central bridge highlight + soft pinpoint tip highlight
+        nhCtx.save();
+        nhCtx.filter = `blur(${Math.max(2, Math.round(interOcular * 0.048))}px)`;
+        nhCtx.strokeStyle = 'rgba(255,255,255,0.88)';
+        nhCtx.lineCap = 'round';
+        nhCtx.lineWidth = Math.max(2, interOcular * 0.062);
+        const hiStartX = topPt[0] + (tipPt[0] - topPt[0]) * 0.12;
+        const hiStartY = topPt[1] + (tipPt[1] - topPt[1]) * 0.12;
+        nhCtx.beginPath();
+        nhCtx.moveTo(hiStartX, hiStartY);
+        nhCtx.lineTo(tipPt[0], tipPt[1]);
+        nhCtx.stroke();
+        // Luminous nose tip dot (pronasale)
+        const tipR = Math.max(4, interOcular * 0.082);
+        const tg = nhCtx.createRadialGradient(tipPt[0], tipPt[1], 1, tipPt[0], tipPt[1], tipR);
+        tg.addColorStop(0, 'rgba(255,255,255,0.95)');
+        tg.addColorStop(1, 'rgba(255,255,255,0)');
+        nhCtx.fillStyle = tg;
+        nhCtx.beginPath();
+        nhCtx.arc(tipPt[0], tipPt[1], tipR, 0, Math.PI * 2);
+        nhCtx.fill();
+        nhCtx.restore();
+      }
     }
     return {
       skin: sCtx.getImageData(0, 0, w, h).data,
@@ -721,7 +1585,11 @@
       teeth: tCtx.getImageData(0, 0, w, h).data,
       lip: lCtx.getImageData(0, 0, w, h).data,
       cheek: chCtx.getImageData(0, 0, w, h).data,
-      hiCheek: hiCtx.getImageData(0, 0, w, h).data
+      hiCheek: hiCtx.getImageData(0, 0, w, h).data,
+      brow: bCtx ? bCtx.getImageData(0, 0, w, h).data : null,
+      shadow: shCtx ? shCtx.getImageData(0, 0, w, h).data : null,
+      noseShadow: nsCtx ? nsCtx.getImageData(0, 0, w, h).data : null,
+      noseHi: nhCtx ? nhCtx.getImageData(0, 0, w, h).data : null
     };
   }
 
@@ -796,12 +1664,16 @@
     const p = getEffectiveEnhanceParams();
     const anyWork = p.clarity || p.smooth || p.blemish || p.wrinkle || p.texture ||
                     p.underEye || p.eyes || p.teeth || p.brighten || p.glow ||
-                    p.cheekBlush || p.lipTint || p.satBoost || p.contrastBoost;
+                    p.noseSlim || p.noseContour || p.faceSlim || p.eyeEnlarge || p.lipPlump ||
+                    p.browTint || (p.browStyle !== 'original' && p.browShape > 0) ||
+                    p.mascara || p.eyeliner || p.eyeshadow ||
+                    p.cheekBlush || p.lipTint || p.hairTint || p.satBoost || p.contrastBoost;
     if (!anyWork) return out;
 
     const imgData = ctx.getImageData(0, 0, w, h);
     const data = imgData.data;
-    const orig = new Uint8ClampedArray(data);
+    // Step 0: Localized bilinear Liquify warps (Face Slim, Nose Slim, Eye Enlarge, Lip Plump, Brow Arch) BEFORE skin retouch!
+    const orig = applyLocalBeautyWarps(new Uint8ClampedArray(data), w, h, cs.enhance.faces, p);
 
     const needFine = p.clarity > 0 || p.wrinkle > 0 || p.texture !== 0 || p.smooth > 0 || p.eyes > 0;
     const needMed  = p.smooth > 0 || p.blemish > 0;
@@ -809,8 +1681,9 @@
     const blurFine = needFine ? boxBlurRGBA(orig, w, h, Math.max(2, Math.round(2.5 * scaleRad))) : null;
     const blurMed  = needMed  ? boxBlurRGBA(orig, w, h, Math.max(5, Math.round(7.5 * scaleRad))) : null;
 
-    const masks = buildFaceRegionMasks(w, h, cs.enhance.faces);
+    const masks = buildFaceRegionMasks(w, h, cs.enhance.faces, p);
     const hasFace = !!masks;
+    const hairMask = (p.hairTint > 0 && hasFace) ? buildHairColorMask(orig, w, h, cs.enhance.faces, masks.skin) : null;
 
     const sharpAmt   = (p.clarity / 100) * 1.35;
     const smoothAmt  = (p.smooth / 100) * 0.84;
@@ -822,12 +1695,20 @@
     const teethAmt   = (p.teeth / 100);
     const brightLift = (p.brighten / 100) * 28;
     const glowAmt    = (p.glow / 100) * 0.24;
+    const noseCntAmt = (p.noseContour / 100);
+    const browAmt    = (p.browTint / 100) * 0.72 + ((p.browStyle !== 'original' && p.browShape > 0 && p.browTint === 0) ? (p.browShape / 100) * 0.26 : 0);
+    const shadowAmt  = (p.eyeshadow / 100) * 0.56;
     const cheekAmt   = (p.cheekBlush / 100) * 0.42;
-    const lipAmt     = (p.lipTint / 100) * 0.58;
+    const lipFinish  = p.lipFinish || 'satin';
+    const lipAmt     = (p.lipTint / 100) * (lipFinish === 'sheer' ? 0.38 : (lipFinish === 'matte' ? 0.68 : (lipFinish === 'glaze' ? 0.62 : 0.56)));
+    const hairAmt    = (p.hairTint / 100) * 0.78;
     const contrast   = 1 + (p.contrastBoost / 100) * 0.7;
     const sat        = 1 + (p.satBoost / 100) * 0.9;
     const [chR, chG, chB] = hexToRgb(p.cheekColor);
     const [lpR, lpG, lpB] = hexToRgb(p.lipColor);
+    const [brR, brG, brB] = hexToRgb(p.browColor);
+    const [shR, shG, shB] = hexToRgb(p.eyeshadowColor);
+    const [hrR, hrG, hrB] = hexToRgb(p.hairColor);
 
     const softLight = (base, blend) => {
       const b = base / 255, s = blend / 255;
@@ -964,26 +1845,128 @@
         }
       }
 
-      // 8. Natural Lip Tint & Gloss (landmark-targeted, preserves lip creases!)
+      // 8. YouCam Lip Color with 4 Realistic Finishes: Sheer | Matte | Glaze | Satin!
       if (lipAmt > 0 && hasFace) {
         const lw = masks.lip[i + 3] / 255;
         if (lw > 0.02) {
           const blend = lipAmt * lw;
-          // Realistic Multiply + Soft-Light hybrid keeps natural shadows & texture
           const mulR = (r * lpR) / 255, mulG = (g * lpG) / 255, mulB = (b * lpB) / 255;
           const slR = softLight(r, lpR), slG = softLight(g, lpG), slB = softLight(b, lpB);
-          const tintR = slR * 0.62 + mulR * 0.38;
-          const tintG = slG * 0.62 + mulG * 0.38;
-          const tintB = slB * 0.62 + mulB * 0.38;
+          let tintR, tintG, tintB;
+          if (lipFinish === 'matte') {
+            tintR = slR * 0.36 + mulR * 0.44 + lpR * 0.20;
+            tintG = slG * 0.36 + mulG * 0.44 + lpG * 0.20;
+            tintB = slB * 0.36 + mulB * 0.44 + lpB * 0.20;
+          } else if (lipFinish === 'sheer') {
+            tintR = slR * 0.80 + mulR * 0.20;
+            tintG = slG * 0.80 + mulG * 0.20;
+            tintB = slB * 0.80 + mulB * 0.20;
+          } else {
+            tintR = slR * 0.60 + mulR * 0.40;
+            tintG = slG * 0.60 + mulG * 0.40;
+            tintB = slB * 0.60 + mulB * 0.40;
+          }
           r = r + (tintR - r) * blend;
           g = g + (tintG - g) * blend;
           b = b + (tintB - b) * blend;
-          // Subtle glossy specular highlight on naturally bright lip ridges
           const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-          if (lum > 140) {
-            const gloss = blend * 0.24 * clamp((lum - 140) / 90, 0, 1);
-            r += (255 - r) * gloss; g += (255 - g) * gloss; b += (255 - b) * gloss;
+          if (lipFinish === 'matte') {
+            // Velvet matte dampens bright shine softly
+            if (lum > 155) {
+              const damp = blend * 0.18 * clamp((lum - 155) / 80, 0, 1);
+              r -= (r - lpR * 0.72) * damp; g -= (g - lpG * 0.72) * damp; b -= (b - lpB * 0.72) * damp;
+            }
+          } else if (lipFinish === 'glaze') {
+            // Juicy wet-look mirror glaze specular highlight!
+            if (lum > 125) {
+              const gloss = blend * 0.54 * Math.pow(clamp((lum - 125) / 95, 0, 1), 1.35);
+              r += (255 - r) * gloss; g += (255 - g) * gloss; b += (255 - b) * gloss;
+            }
+          } else {
+            // Satin / Sheer subtle natural luster
+            if (lum > 140) {
+              const gloss = blend * (lipFinish === 'sheer' ? 0.18 : 0.28) * clamp((lum - 140) / 90, 0, 1);
+              r += (255 - r) * gloss; g += (255 - g) * gloss; b += (255 - b) * gloss;
+            }
           }
+        }
+      }
+
+      // 8b. Nose Sculpting: Matte Lateral Contour Shadows + Bridge & Tip Highlight
+      if (noseCntAmt > 0 && hasFace && masks.noseShadow && masks.noseHi) {
+        const nsw = masks.noseShadow[i + 3] / 255;
+        if (nsw > 0.02) {
+          const sh = noseCntAmt * nsw * 0.26 * (0.45 + 0.55 * ycbcrSkin);
+          // Subtle cool-taupe sculpted shadow
+          r = r * (1 - sh * 0.88);
+          g = g * (1 - sh * 0.96);
+          b = b * (1 - sh * 1.04);
+        }
+        const nhw = masks.noseHi[i + 3] / 255;
+        if (nhw > 0.02) {
+          const hi = noseCntAmt * nhw * 0.28 * (0.45 + 0.55 * ycbcrSkin);
+          r += (255 - r) * hi;
+          g += (250 - g) * hi;
+          b += (240 - b) * hi;
+        }
+      }
+
+      // 8c. Feathered Upper-Lid Eyeshadow (Soft-Light + Multiply hybrid preserving natural lid crease!)
+      if (shadowAmt > 0 && hasFace && masks.shadow) {
+        const sw = masks.shadow[i + 3] / 255;
+        if (sw > 0.02) {
+          const blend = shadowAmt * sw;
+          const slR = softLight(r, shR), slG = softLight(g, shG), slB = softLight(b, shB);
+          const mulR = (r * shR) / 255, mulG = (g * shG) / 255, mulB = (b * shB) / 255;
+          const tr = slR * 0.55 + mulR * 0.45;
+          const tg = slG * 0.55 + mulG * 0.45;
+          const tb = slB * 0.55 + mulB * 0.45;
+          r = r + (tr - r) * blend;
+          g = g + (tg - g) * blend;
+          b = b + (tb - b) * blend;
+        }
+      }
+
+      // 8d. Eyebrow Color & Micro-Bladed Style Fill (clings naturally to real brow hairs!)
+      if (browAmt > 0 && hasFace && masks.brow) {
+        const bw = masks.brow[i + 3] / 255;
+        if (bw > 0.02) {
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          // Darker hair pixels absorb tint strongly; lighter skin gaps get a delicate feathery fill
+          const hairAffinity = clamp(1.18 - lum / 220, 0.42, 1.0);
+          const blend = clamp(browAmt * bw * hairAffinity, 0, 0.88);
+          const mulR = (r * (brR * 0.85 + 38)) / 255;
+          const mulG = (g * (brG * 0.85 + 38)) / 255;
+          const mulB = (b * (brB * 0.85 + 38)) / 255;
+          const slR = softLight(r, brR), slG = softLight(g, brG), slB = softLight(b, brB);
+          // Blend directly toward chosen tint for vivid/lighter hair dye (e.g. Auburn / Honey Blonde) while preserving luminance detail
+          const targetR = mulR * 0.35 + slR * 0.35 + brR * 0.30;
+          const targetG = mulG * 0.35 + slG * 0.35 + brG * 0.30;
+          const targetB = mulB * 0.35 + slB * 0.35 + brB * 0.30;
+          r = r + (targetR - r) * blend;
+          g = g + (targetG - g) * blend;
+          b = b + (targetB - b) * blend;
+        }
+      }
+
+      // 8e. YouCam Hair Color Changer (luminance-preserving strand dye!)
+      if (hairAmt > 0 && hairMask) {
+        const hw = hairMask[i] / 255;
+        if (hw > 0.03) {
+          const blend = hairAmt * hw;
+          const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+          // Preserve strand highlight/shadow luminance while shifting chroma vividly toward hairColor!
+          const lCurve = clamp(0.28 + lum * 1.15, 0.18, 1.38);
+          const colR = clamp(hrR * lCurve, 0, 255);
+          const colG = clamp(hrG * lCurve, 0, 255);
+          const colB = clamp(hrB * lCurve, 0, 255);
+          const slR = softLight(r, hrR), slG = softLight(g, hrG), slB = softLight(b, hrB);
+          const tr = colR * 0.58 + slR * 0.42;
+          const tg = colG * 0.58 + slG * 0.42;
+          const tb = colB * 0.58 + slB * 0.42;
+          r = r + (tr - r) * blend;
+          g = g + (tg - g) * blend;
+          b = b + (tb - b) * blend;
         }
       }
 
@@ -1030,6 +2013,10 @@
     }
 
     ctx.putImageData(imgData, 0, 0);
+    // Crisp high-resolution Mascara & Winged Eyeliner drawn directly on top with realistic multiply blend
+    if ((p.mascara > 0 || p.eyeliner > 0) && hasFace) {
+      drawMascaraAndEyeliner(ctx, cs.enhance.faces, w, h, p);
+    }
     return out;
   }
 
@@ -2567,7 +3554,56 @@
       });
     }
 
-    // 8. Enhance Makeup Shade Rail (Cheek Glow & Lip Tint + PicShelf Palette Studio!)
+    // 8. Enhance Eyebrow Styles & Color Rail + Makeup Shade Rail (with PicShelf Palette Studio!)
+    const browStylesRail = document.getElementById('creativeBrowStylesRail');
+    if (browStylesRail && !browStylesRail._csBound) {
+      browStylesRail._csBound = true;
+      browStylesRail.innerHTML = BROW_STYLES.map(st => `
+        <button type="button" class="creative-pill-btn ${st.id === cs.enhance.browStyle ? 'active' : ''}" data-brow-style="${st.id}">${st.label}</button>
+      `).join('');
+      browStylesRail.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-brow-style]');
+        if (!btn) return;
+        cs.enhance.browStyle = btn.dataset.browStyle;
+        if (cs.enhance.browStyle !== 'original' && cs.enhance.browShape === 0) {
+          cs.enhance.browShape = 65;
+        }
+        cs.enhance._autoPreset = false;
+        cs.enhance.dirty = true;
+        requestFaceLandmarksIfNeeded();
+        syncEnhanceUI();
+        scheduleRender();
+      });
+    }
+
+    const browColorsRail = document.getElementById('creativeBrowColorsRail');
+    if (browColorsRail && !browColorsRail._csBound) {
+      browColorsRail._csBound = true;
+      renderBrowColorRail();
+      browColorsRail.addEventListener('click', (e) => {
+        if (e.target.closest('#creativeBrowPaletteBtn')) {
+          openPaletteStudioFor(cs.enhance.browColor || '#3b2618', (hex) => {
+            rememberCustomColor(hex);
+            cs.enhance.browColor = hex;
+            if (cs.enhance.browTint === 0) cs.enhance.browTint = 55;
+            cs.enhance._autoPreset = false;
+            cs.enhance.dirty = true;
+            syncEnhanceUI();
+            scheduleRender();
+          });
+          return;
+        }
+        const sw = e.target.closest('[data-bcol]');
+        if (!sw) return;
+        cs.enhance.browColor = sw.dataset.bcol;
+        if (cs.enhance.browTint === 0) cs.enhance.browTint = 55;
+        cs.enhance._autoPreset = false;
+        cs.enhance.dirty = true;
+        syncEnhanceUI();
+        scheduleRender();
+      });
+    }
+
     const makeupRail = document.getElementById('creativeMakeupColorsRail');
     if (makeupRail && !makeupRail._csBound) {
       makeupRail._csBound = true;
@@ -2580,13 +3616,16 @@
           return;
         }
         if (e.target.closest('#creativeMakeupPaletteBtn')) {
-          const isCheek = cs.enhance.makeupTarget === 'cheek';
-          const curHex = isCheek ? cs.enhance.cheekColor : cs.enhance.lipColor;
+          const tgt = cs.enhance.makeupTarget;
+          const curHex = tgt === 'cheek' ? cs.enhance.cheekColor : (tgt === 'shadow' ? cs.enhance.eyeshadowColor : cs.enhance.lipColor);
           openPaletteStudioFor(curHex, (hex) => {
             rememberCustomColor(hex);
-            if (isCheek) {
+            if (tgt === 'cheek') {
               cs.enhance.cheekColor = hex;
               if (cs.enhance.cheekBlush === 0) cs.enhance.cheekBlush = 35;
+            } else if (tgt === 'shadow') {
+              cs.enhance.eyeshadowColor = hex;
+              if (cs.enhance.eyeshadow === 0) cs.enhance.eyeshadow = 45;
             } else {
               cs.enhance.lipColor = hex;
               if (cs.enhance.lipTint === 0) cs.enhance.lipTint = 35;
@@ -2601,9 +3640,13 @@
         const sw = e.target.closest('[data-mcol]');
         if (!sw) return;
         const hex = sw.dataset.mcol;
-        if (cs.enhance.makeupTarget === 'cheek') {
+        const tgt = cs.enhance.makeupTarget;
+        if (tgt === 'cheek') {
           cs.enhance.cheekColor = hex;
           if (cs.enhance.cheekBlush === 0) cs.enhance.cheekBlush = 35;
+        } else if (tgt === 'shadow') {
+          cs.enhance.eyeshadowColor = hex;
+          if (cs.enhance.eyeshadow === 0) cs.enhance.eyeshadow = 45;
         } else {
           cs.enhance.lipColor = hex;
           if (cs.enhance.lipTint === 0) cs.enhance.lipTint = 35;
@@ -2614,18 +3657,88 @@
         scheduleRender();
       });
     }
+    // 9. YouCam Lip Finish Rail (Sheer | Matte | Glaze | Satin) & Hair Color Rail + Palette Studio!
+    const lipFinishRail = document.getElementById('creativeLipFinishRail');
+    if (lipFinishRail && !lipFinishRail._csBound) {
+      lipFinishRail._csBound = true;
+      lipFinishRail.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-lip-finish]');
+        if (!btn) return;
+        cs.enhance.lipFinish = btn.dataset.lipFinish;
+        if (cs.enhance.lipTint === 0) cs.enhance.lipTint = 45;
+        cs.enhance._autoPreset = false;
+        cs.enhance.dirty = true;
+        syncEnhanceUI();
+        scheduleRender();
+      });
+    }
+
+    const hairColorsRail = document.getElementById('creativeHairColorsRail');
+    if (hairColorsRail && !hairColorsRail._csBound) {
+      hairColorsRail._csBound = true;
+      renderHairColorRail();
+      hairColorsRail.addEventListener('click', (e) => {
+        if (e.target.closest('#creativeHairPaletteBtn')) {
+          openPaletteStudioFor(cs.enhance.hairColor || '#9333ea', (hex) => {
+            rememberCustomColor(hex);
+            cs.enhance.hairColor = hex;
+            if (cs.enhance.hairTint === 0) cs.enhance.hairTint = 65;
+            cs.enhance._autoPreset = false;
+            cs.enhance.dirty = true;
+            requestFaceLandmarksIfNeeded();
+            syncEnhanceUI();
+            scheduleRender();
+          });
+          return;
+        }
+        const sw = e.target.closest('[data-hcol]');
+        if (!sw) return;
+        cs.enhance.hairColor = sw.dataset.hcol;
+        if (cs.enhance.hairTint === 0) cs.enhance.hairTint = 65;
+        cs.enhance._autoPreset = false;
+        cs.enhance.dirty = true;
+        requestFaceLandmarksIfNeeded();
+        syncEnhanceUI();
+        scheduleRender();
+      });
+    }
+  }
+
+  function renderHairColorRail() {
+    const rail = document.getElementById('creativeHairColorsRail');
+    if (!rail) return;
+    const activeHex = (cs.enhance.hairColor || '#9333ea').toLowerCase();
+    const customCols = getSavedCustomColors().filter(c => !HAIR_SHADES.includes(c));
+    rail.innerHTML = `
+      <button type="button" class="creative-palette-btn" id="creativeHairPaletteBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
+      ${HAIR_SHADES.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-hcol="${c}" style="background:${c};"></button>`).join('')}
+      ${customCols.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-hcol="${c}" style="background:${c};" title="Custom ${c.toUpperCase()}"></button>`).join('')}
+    `;
+  }
+
+  function renderBrowColorRail() {
+    const rail = document.getElementById('creativeBrowColorsRail');
+    if (!rail) return;
+    const activeHex = (cs.enhance.browColor || '#3b2618').toLowerCase();
+    const customCols = getSavedCustomColors().filter(c => !BROW_SHADES.includes(c));
+    rail.innerHTML = `
+      <button type="button" class="creative-palette-btn" id="creativeBrowPaletteBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
+      ${BROW_SHADES.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-bcol="${c}" style="background:${c};"></button>`).join('')}
+      ${customCols.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-bcol="${c}" style="background:${c};" title="Custom ${c.toUpperCase()}"></button>`).join('')}
+    `;
   }
 
   function renderMakeupColorRail() {
     const rail = document.getElementById('creativeMakeupColorsRail');
     if (!rail) return;
-    const isCheek = cs.enhance.makeupTarget === 'cheek';
-    const activeHex = (isCheek ? cs.enhance.cheekColor : cs.enhance.lipColor || '').toLowerCase();
-    const baseShades = isCheek ? CHEEK_SHADES : LIP_SHADES;
+    const tgt = cs.enhance.makeupTarget || 'lip';
+    const activeHex = (tgt === 'cheek' ? cs.enhance.cheekColor : (tgt === 'shadow' ? cs.enhance.eyeshadowColor : cs.enhance.lipColor) || '').toLowerCase();
+    const baseShades = tgt === 'cheek' ? CHEEK_SHADES : (tgt === 'shadow' ? SHADOW_SHADES : LIP_SHADES);
     const customCols = getSavedCustomColors().filter(c => !baseShades.includes(c));
     rail.innerHTML = `
-      <button type="button" class="creative-pill-btn ${isCheek ? 'active' : ''}" data-mtarget="cheek">Cheeks</button>
-      <button type="button" class="creative-pill-btn ${!isCheek ? 'active' : ''}" data-mtarget="lip">Lips</button>
+      <button type="button" class="creative-pill-btn ${tgt === 'lip' ? 'active' : ''}" data-mtarget="lip">Lips</button>
+      <button type="button" class="creative-pill-btn ${tgt === 'cheek' ? 'active' : ''}" data-mtarget="cheek">Cheeks</button>
+      <button type="button" class="creative-pill-btn ${tgt === 'shadow' ? 'active' : ''}" data-mtarget="shadow">Shadow</button>
       <button type="button" class="creative-palette-btn" id="creativeMakeupPaletteBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
       ${baseShades.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-mcol="${c}" style="background:${c};"></button>`).join('')}
       ${customCols.map(c => `<button type="button" class="creative-swatch ${c === activeHex ? 'active' : ''}" data-mcol="${c}" style="background:${c};" title="Custom ${c.toUpperCase()}"></button>`).join('')}
@@ -2692,26 +3805,45 @@
     document.querySelectorAll('#creativeEnhancePresets .creative-pill-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.preset === cs.enhance.preset);
     });
+    document.querySelectorAll('#creativeBrowStylesRail [data-brow-style]').forEach(b => {
+      b.classList.toggle('active', b.dataset.browStyle === cs.enhance.browStyle);
+    });
+    document.querySelectorAll('#creativeLipFinishRail [data-lip-finish]').forEach(b => {
+      b.classList.toggle('active', b.dataset.lipFinish === (cs.enhance.lipFinish || 'satin'));
+    });
     const sliders = [
-      ['creativeEnhanceClaritySlider',  'creativeEnhanceClarityVal',  cs.enhance.clarity,    '%'],
-      ['creativeEnhanceSmoothSlider',   'creativeEnhanceSmoothVal',   cs.enhance.smooth,     '%'],
-      ['creativeEnhanceBlemishSlider',  'creativeEnhanceBlemishVal',  cs.enhance.blemish,    '%'],
-      ['creativeEnhanceWrinkleSlider',  'creativeEnhanceWrinkleVal',  cs.enhance.wrinkle,    '%'],
-      ['creativeEnhanceTextureSlider',  'creativeEnhanceTextureVal',  cs.enhance.texture,    'signed'],
-      ['creativeEnhanceUnderEyeSlider', 'creativeEnhanceUnderEyeVal', cs.enhance.underEye,   '%'],
-      ['creativeEnhanceEyesSlider',     'creativeEnhanceEyesVal',     cs.enhance.eyes,       '%'],
-      ['creativeEnhanceTeethSlider',    'creativeEnhanceTeethVal',    cs.enhance.teeth,      '%'],
-      ['creativeEnhanceBrightenSlider', 'creativeEnhanceBrightenVal', cs.enhance.brighten,   '%'],
-      ['creativeEnhanceGlowSlider',     'creativeEnhanceGlowVal',     cs.enhance.glow,       '%'],
-      ['creativeEnhanceCheekSlider',    'creativeEnhanceCheekVal',    cs.enhance.cheekBlush, '%'],
-      ['creativeEnhanceLipSlider',      'creativeEnhanceLipVal',      cs.enhance.lipTint,    '%']
+      ['creativeEnhanceClaritySlider',     'creativeEnhanceClarityVal',     cs.enhance.clarity,     '%'],
+      ['creativeEnhanceSmoothSlider',      'creativeEnhanceSmoothVal',      cs.enhance.smooth,      '%'],
+      ['creativeEnhanceBlemishSlider',     'creativeEnhanceBlemishVal',     cs.enhance.blemish,     '%'],
+      ['creativeEnhanceWrinkleSlider',     'creativeEnhanceWrinkleVal',     cs.enhance.wrinkle,     '%'],
+      ['creativeEnhanceTextureSlider',     'creativeEnhanceTextureVal',     cs.enhance.texture,     'signed'],
+      ['creativeEnhanceUnderEyeSlider',    'creativeEnhanceUnderEyeVal',    cs.enhance.underEye,    '%'],
+      ['creativeEnhanceEyesSlider',        'creativeEnhanceEyesVal',        cs.enhance.eyes,        '%'],
+      ['creativeEnhanceTeethSlider',       'creativeEnhanceTeethVal',       cs.enhance.teeth,       '%'],
+      ['creativeEnhanceBrightenSlider',    'creativeEnhanceBrightenVal',    cs.enhance.brighten,    '%'],
+      ['creativeEnhanceGlowSlider',        'creativeEnhanceGlowVal',        cs.enhance.glow,        '%'],
+      ['creativeEnhanceFaceSlimSlider',    'creativeEnhanceFaceSlimVal',    cs.enhance.faceSlim,    '%'],
+      ['creativeEnhanceNoseSlimSlider',    'creativeEnhanceNoseSlimVal',    cs.enhance.noseSlim,    '%'],
+      ['creativeEnhanceNoseContourSlider', 'creativeEnhanceNoseContourVal', cs.enhance.noseContour, '%'],
+      ['creativeEnhanceEyeEnlargeSlider',  'creativeEnhanceEyeEnlargeVal',  cs.enhance.eyeEnlarge,  '%'],
+      ['creativeEnhanceLipPlumpSlider',    'creativeEnhanceLipPlumpVal',    cs.enhance.lipPlump,    '%'],
+      ['creativeEnhanceBrowTintSlider',    'creativeEnhanceBrowTintVal',    cs.enhance.browTint,    '%'],
+      ['creativeEnhanceBrowShapeSlider',   'creativeEnhanceBrowShapeVal',   cs.enhance.browShape,   '%'],
+      ['creativeEnhanceMascaraSlider',     'creativeEnhanceMascaraVal',     cs.enhance.mascara,     '%'],
+      ['creativeEnhanceEyelinerSlider',    'creativeEnhanceEyelinerVal',    cs.enhance.eyeliner,    '%'],
+      ['creativeEnhanceEyeshadowSlider',   'creativeEnhanceEyeshadowVal',   cs.enhance.eyeshadow,   '%'],
+      ['creativeEnhanceCheekSlider',       'creativeEnhanceCheekVal',       cs.enhance.cheekBlush,  '%'],
+      ['creativeEnhanceLipSlider',         'creativeEnhanceLipVal',         cs.enhance.lipTint,     '%'],
+      ['creativeEnhanceHairSlider',        'creativeEnhanceHairVal',        cs.enhance.hairTint,    '%']
     ];
     for (const [sid, vid, val, fmt] of sliders) {
       const s = document.getElementById(sid), v = document.getElementById(vid);
       if (s) s.value = val;
       if (v) v.textContent = fmt === 'signed' ? (val > 0 ? `+${val}` : `${val}`) : `${val}${fmt}`;
     }
+    renderBrowColorRail();
     renderMakeupColorRail();
+    renderHairColorRail();
     updateFaceStatusHint();
   }
 
@@ -2889,6 +4021,9 @@
       cs.enhance.sub = sub;
       document.querySelectorAll('#studioEnhanceSubnav .studio-subnav-btn').forEach(b => b.classList.toggle('active', b === btn));
       document.querySelectorAll('#studioPanelEnhance .creative-subpanel').forEach(p => p.classList.toggle('active', p.dataset.subpanel === sub));
+      if (typeof btn.scrollIntoView === 'function') {
+        btn.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+      }
     });
     document.getElementById('creativeEnhancePresets')?.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-preset]');
@@ -2899,7 +4034,11 @@
         cs.enhance.clarity = 0; cs.enhance.smooth = 0; cs.enhance.blemish = 0;
         cs.enhance.wrinkle = 0; cs.enhance.texture = 0; cs.enhance.underEye = 0;
         cs.enhance.eyes = 0; cs.enhance.teeth = 0; cs.enhance.brighten = 0;
-        cs.enhance.glow = 0; cs.enhance.cheekBlush = 0; cs.enhance.lipTint = 0;
+        cs.enhance.glow = 0; cs.enhance.faceSlim = 0; cs.enhance.noseSlim = 0;
+        cs.enhance.noseContour = 0; cs.enhance.eyeEnlarge = 0; cs.enhance.lipPlump = 0;
+        cs.enhance.browStyle = 'original'; cs.enhance.browTint = 0; cs.enhance.browShape = 0;
+        cs.enhance.mascara = 0; cs.enhance.eyeliner = 0; cs.enhance.eyeshadow = 0;
+        cs.enhance.cheekBlush = 0; cs.enhance.lipTint = 0; cs.enhance.hairTint = 0;
       } else {
         requestFaceLandmarksIfNeeded();
       }
@@ -2922,18 +4061,29 @@
         scheduleRender();
       });
     };
-    bindEnh('creativeEnhanceClaritySlider',  'creativeEnhanceClarityVal',  'clarity');
-    bindEnh('creativeEnhanceSmoothSlider',   'creativeEnhanceSmoothVal',   'smooth');
-    bindEnh('creativeEnhanceBlemishSlider',  'creativeEnhanceBlemishVal',  'blemish');
-    bindEnh('creativeEnhanceWrinkleSlider',  'creativeEnhanceWrinkleVal',  'wrinkle');
-    bindEnh('creativeEnhanceTextureSlider',  'creativeEnhanceTextureVal',  'texture', 'signed');
-    bindEnh('creativeEnhanceUnderEyeSlider', 'creativeEnhanceUnderEyeVal', 'underEye');
-    bindEnh('creativeEnhanceEyesSlider',     'creativeEnhanceEyesVal',     'eyes');
-    bindEnh('creativeEnhanceTeethSlider',    'creativeEnhanceTeethVal',    'teeth');
-    bindEnh('creativeEnhanceBrightenSlider', 'creativeEnhanceBrightenVal', 'brighten');
-    bindEnh('creativeEnhanceGlowSlider',     'creativeEnhanceGlowVal',     'glow');
-    bindEnh('creativeEnhanceCheekSlider',    'creativeEnhanceCheekVal',    'cheekBlush', '%', 'cheek');
-    bindEnh('creativeEnhanceLipSlider',      'creativeEnhanceLipVal',      'lipTint',    '%', 'lip');
+    bindEnh('creativeEnhanceClaritySlider',     'creativeEnhanceClarityVal',     'clarity');
+    bindEnh('creativeEnhanceSmoothSlider',      'creativeEnhanceSmoothVal',      'smooth');
+    bindEnh('creativeEnhanceBlemishSlider',     'creativeEnhanceBlemishVal',     'blemish');
+    bindEnh('creativeEnhanceWrinkleSlider',     'creativeEnhanceWrinkleVal',     'wrinkle');
+    bindEnh('creativeEnhanceTextureSlider',     'creativeEnhanceTextureVal',     'texture', 'signed');
+    bindEnh('creativeEnhanceUnderEyeSlider',    'creativeEnhanceUnderEyeVal',    'underEye');
+    bindEnh('creativeEnhanceEyesSlider',        'creativeEnhanceEyesVal',        'eyes');
+    bindEnh('creativeEnhanceTeethSlider',       'creativeEnhanceTeethVal',       'teeth');
+    bindEnh('creativeEnhanceBrightenSlider',    'creativeEnhanceBrightenVal',    'brighten');
+    bindEnh('creativeEnhanceGlowSlider',        'creativeEnhanceGlowVal',        'glow');
+    bindEnh('creativeEnhanceFaceSlimSlider',    'creativeEnhanceFaceSlimVal',    'faceSlim');
+    bindEnh('creativeEnhanceNoseSlimSlider',    'creativeEnhanceNoseSlimVal',    'noseSlim');
+    bindEnh('creativeEnhanceNoseContourSlider', 'creativeEnhanceNoseContourVal', 'noseContour');
+    bindEnh('creativeEnhanceEyeEnlargeSlider',  'creativeEnhanceEyeEnlargeVal',  'eyeEnlarge');
+    bindEnh('creativeEnhanceLipPlumpSlider',    'creativeEnhanceLipPlumpVal',    'lipPlump');
+    bindEnh('creativeEnhanceBrowTintSlider',    'creativeEnhanceBrowTintVal',    'browTint');
+    bindEnh('creativeEnhanceBrowShapeSlider',   'creativeEnhanceBrowShapeVal',   'browShape');
+    bindEnh('creativeEnhanceMascaraSlider',     'creativeEnhanceMascaraVal',     'mascara');
+    bindEnh('creativeEnhanceEyelinerSlider',    'creativeEnhanceEyelinerVal',    'eyeliner');
+    bindEnh('creativeEnhanceEyeshadowSlider',   'creativeEnhanceEyeshadowVal',   'eyeshadow', '%', 'shadow');
+    bindEnh('creativeEnhanceCheekSlider',       'creativeEnhanceCheekVal',       'cheekBlush', '%', 'cheek');
+    bindEnh('creativeEnhanceLipSlider',         'creativeEnhanceLipVal',         'lipTint',    '%', 'lip');
+    bindEnh('creativeEnhanceHairSlider',        'creativeEnhanceHairVal',        'hairTint');
 
     // Smart Remove Controls (Picsart MI-GAN AI + Working Clear & Undo)
     document.getElementById('creativeRemoveSizeSlider')?.addEventListener('input', (e) => {
@@ -3144,8 +4294,21 @@
       cs.enhance.teeth = 0;
       cs.enhance.brighten = 0;
       cs.enhance.glow = 0;
+      cs.enhance.faceSlim = 0;
+      cs.enhance.noseSlim = 0;
+      cs.enhance.noseContour = 0;
+      cs.enhance.eyeEnlarge = 0;
+      cs.enhance.lipPlump = 0;
+      cs.enhance.browStyle = 'original';
+      cs.enhance.browTint = 0;
+      cs.enhance.browShape = 0;
+      cs.enhance.mascara = 0;
+      cs.enhance.eyeliner = 0;
+      cs.enhance.eyeshadow = 0;
       cs.enhance.cheekBlush = 0;
       cs.enhance.lipTint = 0;
+      cs.enhance.lipFinish = 'satin';
+      cs.enhance.hairTint = 0;
       cs.enhance._autoPreset = false;
       cs.enhance.splitPos = 0.5;
       cs.enhance.dirty = true;
@@ -3193,8 +4356,21 @@
     cs.enhance.teeth = 0;
     cs.enhance.brighten = 0;
     cs.enhance.glow = 0;
+    cs.enhance.faceSlim = 0;
+    cs.enhance.noseSlim = 0;
+    cs.enhance.noseContour = 0;
+    cs.enhance.eyeEnlarge = 0;
+    cs.enhance.lipPlump = 0;
+    cs.enhance.browStyle = 'original';
+    cs.enhance.browTint = 0;
+    cs.enhance.browShape = 0;
+    cs.enhance.mascara = 0;
+    cs.enhance.eyeliner = 0;
+    cs.enhance.eyeshadow = 0;
     cs.enhance.cheekBlush = 0;
     cs.enhance.lipTint = 0;
+    cs.enhance.lipFinish = 'satin';
+    cs.enhance.hairTint = 0;
     cs.enhance._autoPreset = false;
     cs.enhance.faces = null;
     cs.enhance.faceReqId = null;
