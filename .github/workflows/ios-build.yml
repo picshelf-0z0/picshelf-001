@@ -119,6 +119,7 @@ jobs:
 
       - name: Build & Verify on Apple iOS Simulator
         continue-on-error: true
+        timeout-minutes: 5
         run: |
           xcodebuild build \
             -project ios/AuraPhotoOrganizer.xcodeproj \
