@@ -59,7 +59,7 @@
     "'": String.fromCharCode(0x2019), '`': String.fromCharCode(0x02cb), '\\': String.fromCharCode(0x2216)
   };
   const RISKY_TEST = /[<>"'`\\]/;
-  const VIRTUAL = /^https:\/\/picshelf-(thumbnails|originals)\.invalid\/([^/?#]+)\/((?:video-|metadata-)?)(tar|zip)\/(\d+)\/(\d+)\/(\d+)([^#]*)$/;
+  const VIRTUAL = /^(?:https:\/\/picshelf-(thumbnails|originals)\.invalid\/|picshelf-(thumbnails|originals):\/\/local\/|http:\/\/127\.0\.0\.1:\d+\/ps-[a-f0-9]+\/(thumbs|originals)\/)([^/?#]+)\/((?:video-|metadata-)?)(tar|zip)\/(\d+)\/(\d+)\/(\d+)([^#]*)$/i;
   const SAFE_DATA = /^data:(?:image|video|audio)\/[a-z0-9.+-]+(?:;[a-z0-9.+=-]+)*;base64,[A-Za-z0-9+/]*={0,2}$/i;
   const SAFE_ASSET = /^assets\/(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*\/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
   const URL_KEY = /(?:url|uri|src|poster)$/i;
@@ -523,17 +523,17 @@
     const memoryKeys = new WeakMap();
     let queue = [];
 
-    function flushPlan(force) {
+    async function flushPlan(force) {
       if (!plan.length || (!force && plan.length < PLAN_BATCH)) return;
       const text = JSON.stringify(plan);
       plan = [];
-      if (!bridge().libraryBackupExportPlan(jobId, text)) throw new BackupError('storage');
+      if (!(await bridge().libraryBackupExportPlan(jobId, text))) throw new BackupError('storage');
     }
 
-    function addEntry(entry) {
+    async function addEntry(entry) {
       plan.push(entry);
       mediaBytes += entry.length;
-      flushPlan(false);
+      await flushPlan(false);
     }
 
     // Album covers can show another item's archive picture: find that item once.
@@ -647,15 +647,17 @@
           }
           return value;
         }
-        if (value.startsWith('https://picshelf-')) {
+        if (value.startsWith('https://picshelf-') || value.startsWith('picshelf-') ||
+            window.ArchiveSources?.isOriginalUrl?.(value) || window.ArchiveSources?.isThumbnailUrl?.(value)) {
           const match = VIRTUAL.exec(value);
           if (!match) return null;
-          const token = (() => { try { return decodeURIComponent(match[2]); } catch (_) { return ''; } })();
-          const coordinates = `${token}|${match[4]}|${match[5]}|${match[6]}|${match[7]}`;
+          const kindBucket = (match[1] || match[2] || (match[3] === 'thumbs' ? 'thumbnails' : match[3])) || 'originals';
+          const token = (() => { try { return decodeURIComponent(match[4]); } catch (_) { return ''; } })();
+          const coordinates = `${token}|${match[6]}|${match[7]}|${match[8]}|${match[9]}`;
           let number = archiveKeys.get(coordinates);
           if (number === undefined) number = resolveVirtual(coordinates);
           if (number === undefined) return null;
-          return { $v: match[1], p: match[3], q: match[8], n: number };
+          return { $v: kindBucket, p: match[5], q: match[10], n: number };
         }
         return value;
       }
@@ -720,12 +722,12 @@
 
     async function stageBlob(number, blob, entry) {
       const size = blob.size;
-      if (!bridge().libraryBackupExportStageBegin(jobId, number, size)) throw new BackupError('storage');
+      if (!(await bridge().libraryBackupExportStageBegin(jobId, number, size))) throw new BackupError('storage');
       let complete = true;
       try {
         for (let offset = 0; offset < size; offset += STAGE_BYTES) {
           const base64 = await readBase64(blob.slice(offset, Math.min(size, offset + STAGE_BYTES)));
-          if (!bridge().libraryBackupExportStageAppend(jobId, base64)) throw new BackupError('storage');
+          if (!(await bridge().libraryBackupExportStageAppend(jobId, base64))) throw new BackupError('storage');
           if (cancelRequested) throw CANCELLED;
         }
       } catch (error) {
@@ -733,8 +735,8 @@
         // The bytes are gone (e.g. a file removed meanwhile): the entry is kept, marked unreadable.
         complete = false;
       }
-      if (!bridge().libraryBackupExportStageEnd(jobId, complete)) throw new BackupError('storage');
-      addEntry({ ...entry, stage: number, length: entry.length ?? size });
+      if (!(await bridge().libraryBackupExportStageEnd(jobId, complete))) throw new BackupError('storage');
+      await addEntry({ ...entry, stage: number, length: entry.length ?? size });
     }
 
     async function stageData(number, text) {
@@ -747,19 +749,19 @@
         return stageBlob(number, blob || new Blob([]), { t: 'f', name: entryName(number, '', text.slice(5, comma)) });
       }
       const length = decodedLength(payload);
-      if (!bridge().libraryBackupExportStageBegin(jobId, number, length)) throw new BackupError('storage');
+      if (!(await bridge().libraryBackupExportStageBegin(jobId, number, length))) throw new BackupError('storage');
       for (let offset = 0; offset < payload.length; offset += STAGE_CHARS) {
-        if (!bridge().libraryBackupExportStageAppend(jobId, payload.slice(offset, offset + STAGE_CHARS))) throw new BackupError('storage');
+        if (!(await bridge().libraryBackupExportStageAppend(jobId, payload.slice(offset, offset + STAGE_CHARS)))) throw new BackupError('storage');
         if (cancelRequested) throw CANCELLED;
         if (offset + STAGE_CHARS < payload.length) await yieldTask();
       }
-      if (!bridge().libraryBackupExportStageEnd(jobId, true)) throw new BackupError('storage');
-      addEntry({ t: 'f', name: entryName(number, '', text.slice(5, comma).split(';')[0]), stage: number, length });
+      if (!(await bridge().libraryBackupExportStageEnd(jobId, true))) throw new BackupError('storage');
+      await addEntry({ t: 'f', name: entryName(number, '', text.slice(5, comma).split(';')[0]), stage: number, length });
     }
 
     // Archive entries need no reading: list them right away. True while media waits to be staged.
-    function drain() {
-      while (queue.length && queue[0].archive) addEntry(queue.shift().archive);
+    async function drain() {
+      while (queue.length && queue[0].archive) await addEntry(queue.shift().archive);
       return queue.length > 0;
     }
 
@@ -767,7 +769,7 @@
     async function flushQueue() {
       while (queue.length) {
         const item = queue.shift();
-        if (item.archive) { addEntry(item.archive); continue; }
+        if (item.archive) { await addEntry(item.archive); continue; }
         if (item.data !== undefined) { await stageData(item.number, item.data); continue; }
         let blob = item.blob || null;
         if (!blob) {
@@ -790,7 +792,7 @@
 
     return {
       encodeRecord, encodeAlbum, flushQueue, drain,
-      finish() { drain(); flushPlan(true); },
+      async finish() { await drain(); await flushPlan(true); },
       get entries() { return next; },
       get bytes() { return mediaBytes; },
       get pending() { return queue.length > 0; }
@@ -816,22 +818,22 @@
     let jobId = '';
     try {
       if (cancelRequested) throw CANCELLED;
-      let started = parse(bridge().libraryBackupExportBegin(fileName(), notificationCopy()));
+      let started = parse(await bridge().libraryBackupExportBegin(fileName(), notificationCopy()));
       if (!started.ok && started.error === 'permission' && native('libraryBackupRequestStorage')) {
         if (!(await requestStorage())) throw new BackupError('permission');
-        started = parse(bridge().libraryBackupExportBegin(fileName(), notificationCopy()));
+        started = parse(await bridge().libraryBackupExportBegin(fileName(), notificationCopy()));
       }
       if (!started.ok || !started.id) throw new BackupError(started.error || 'storage');
       jobId = started.id;
       const listing = createListing(jobId);
       let indexParts = [], indexSize = 0;
-      const writeIndex = (text, force) => {
+      const writeIndex = async (text, force) => {
         indexParts.push(text);
         indexSize += text.length;
         if (indexSize >= INDEX_LINE || force) {
           const chunk = indexParts.join('');
           indexParts = []; indexSize = 0;
-          if (!bridge().libraryBackupExportIndex(jobId, chunk)) throw new BackupError('storage');
+          if (!(await bridge().libraryBackupExportIndex(jobId, chunk))) throw new BackupError('storage');
         }
       };
       const tags = (Array.isArray(state.tags) ? state.tags : []).map(listing.encodeAlbum).filter(Boolean);
@@ -850,18 +852,18 @@
       };
       await listing.flushQueue();
       const head = JSON.stringify(header);
-      writeIndex(head.slice(0, -2) + '\n');
+      await writeIndex(head.slice(0, -2) + '\n');
       const total = photos.length;
       let line = [], lineSize = 0;
       let sliceStart = performance.now();
       for (let index = 0; index < total; index++) {
         const record = listing.encodeRecord(photos[index]);
-        if (listing.drain()) await listing.flushQueue();
+        if (await listing.drain()) await listing.flushQueue();
         const text = JSON.stringify(record);
         line.push(text);
         lineSize += text.length;
         if (lineSize >= INDEX_LINE || line.length >= ROWS_PER_LINE || index + 1 === total) {
-          writeIndex(line.join(',') + (index + 1 < total ? ',\n' : '\n'));
+          await writeIndex(line.join(',') + (index + 1 < total ? ',\n' : '\n'));
           line = []; lineSize = 0;
         }
         if (performance.now() - sliceStart > SLICE_MS) {
@@ -871,11 +873,11 @@
           if (cancelRequested) throw CANCELLED;
         }
       }
-      writeIndex(']}\n', true);
-      listing.finish();
+      await writeIndex(']}\n', true);
+      await listing.finish();
       if (cancelRequested) throw CANCELLED;
       setProgress(1);
-      const queued = parse(bridge().libraryBackupExportStart(jobId));
+      const queued = parse(await bridge().libraryBackupExportStart(jobId));
       if (!queued.ok) {
         jobId = '';
         throw new BackupError(queued.error || 'storage', queued.needed);
@@ -1019,7 +1021,7 @@
     render({
       eyebrow: t('settings_export_backup'),
       title: t('backup_saved_title'),
-      text: t('backup_saved_body', { folder: result.folder || 'Download/PicShelf', name: result.name || '' }) +
+      text: t('backup_saved_body', { folder: result.folder || (window.isNativeIOS ? 'Files › On My iPhone › PicShelf' : 'Download/PicShelf'), name: result.name || '' }) +
         (result.bytes > 0 ? '\n' + formatBytes(result.bytes) : ''),
       note: t('backup_full_saved_note'),
       note2: skipped > 0 ? t('backup_skipped_note', { count: fmt(skipped) }) : '',
@@ -1038,7 +1040,7 @@
     return {
       size: Number(opened.size) || 0,
       progress() { try { return closed ? -1 : bridge().libraryBackupProgress(opened.token); } catch (_) { return -1; } },
-      async read() { return closed ? '' : (bridge().libraryBackupRead(opened.token, READ_CHUNK) || ''); },
+      async read() { return closed ? '' : ((await bridge().libraryBackupRead(opened.token, READ_CHUNK)) || ''); },
       close() {
         if (closed) return;
         closed = true;
@@ -1630,7 +1632,7 @@
     }
     if (plan.full) {
       // The reader token stays open: a restore copies media out of this same file.
-      showFullPreview(plan, opened, reader);
+      await showFullPreview(plan, opened, reader);
       return;
     }
     reader.close();
@@ -1797,10 +1799,10 @@
     return { budget, over };
   }
 
-  function showFullPreview(plan, opened, reader) {
+  async function showFullPreview(plan, opened, reader) {
     const eyebrow = t('settings_import_backup');
     let table = [];
-    try { table = parse(bridge().libraryBackupEntries(opened.token)).entries || []; } catch (_) {}
+    try { table = parse(await bridge().libraryBackupEntries(opened.token)).entries || []; } catch (_) {}
     const entries = neededEntries(plan, table);
     const date = formatDate(plan.exportedAt);
     const meta = [date ? t('backup_confirm_date', { date }) : '',
@@ -1850,7 +1852,7 @@
     }
     phase = 'job';
     await askNotifications();
-    const started = parse(bridge().libraryBackupRestoreStart(opened.token, JSON.stringify(entries.list), notificationCopy()));
+    const started = parse(await bridge().libraryBackupRestoreStart(opened.token, JSON.stringify(entries.list), notificationCopy()));
     reader.close();
     if (!started.ok || !started.id) {
       phase = 'message';
@@ -1878,9 +1880,9 @@
     render({ eyebrow, title: t('backup_finishing_title'), text: t('backup_finishing_body'), progress: null });
     let reader = null;
     try {
-      const result = parse(bridge().libraryBackupRestoreResult(id));
+      const result = parse(await bridge().libraryBackupRestoreResult(id));
       if (!Array.isArray(result.entries)) throw new BackupError('read');
-      const opened = parse(bridge().libraryBackupReopen(id));
+      const opened = parse(await bridge().libraryBackupReopen(id));
       if (!opened.ok || !opened.token) throw new BackupError('read');
       reader = nativeReader(opened);
       const plan = await readPlan(reader, fraction => setProgress(fraction === null ? null : fraction * 0.3), true);
@@ -1973,7 +1975,10 @@
         if (!place || !sourceId || (value.$v !== 'thumbnails' && value.$v !== 'originals')) return null;
         const prefix = value.p === 'video-' || value.p === 'metadata-' ? value.p : '';
         const query = typeof value.q === 'string' && /^(?:\?[A-Za-z0-9=&%._+-]*)?$/.test(value.q) ? value.q : '';
-        return `https://picshelf-${value.$v}.invalid/${encodeURIComponent(sourceId)}/${prefix}tar/${place.offset}/${place.length}/0${query}`;
+        const origin = value.$v === 'thumbnails'
+          ? (window.ArchiveSources?.thumbnailsOrigin || 'https://picshelf-thumbnails.invalid/')
+          : (window.ArchiveSources?.originalsOrigin || 'https://picshelf-originals.invalid/');
+        return `${origin}${encodeURIComponent(sourceId)}/${prefix}tar/${place.offset}/${place.length}/0${query}`;
       }
       const out = {};
       for (const name of Object.keys(value)) {

@@ -9,6 +9,7 @@ import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
 import PDFKit
+import UserNotifications
 
 class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDelegate, UINavigationControllerDelegate, PHPickerViewControllerDelegate, UIDocumentPickerDelegate, CLLocationManagerDelegate {
 
@@ -16,6 +17,7 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     weak var webView: WKWebView?
 
     private var targetAlbumForImport: String?
+    private var isPickingBackupFile: Bool = false
     private var isGpsMetadataEnabled: Bool = true
     private let importQueue = DispatchQueue(label: "com.picshelf.ios.importQueue", qos: .userInitiated)
     private let downloadQueue = DispatchQueue(label: "com.picshelf.ios.downloadQueue", qos: .userInitiated)
@@ -109,6 +111,62 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                let data = idsJson.data(using: .utf8),
                let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
                 PicShelfMediaStore.shared.retainSources(Set(arr))
+            }
+
+        case "libraryBackupPick":
+            openBackupFilePicker()
+
+        case "libraryBackupExportAbort":
+            if let id = body["id"] as? String {
+                PicShelfBackupManager.shared.abortPrepare(id: id)
+            }
+
+        case "libraryBackupCancel":
+            if let id = body["id"] as? String {
+                PicShelfBackupManager.shared.cancelJob(id: id)
+            }
+
+        case "libraryBackupAcknowledge":
+            if let id = body["id"] as? String {
+                PicShelfBackupManager.shared.acknowledge(id: id)
+            }
+
+        case "libraryBackupClearInterrupted":
+            PicShelfBackupManager.shared.clearInterrupted()
+
+        case "libraryBackupClose":
+            if let token = body["token"] as? String {
+                PicShelfBackupManager.shared.closeRead(token: token)
+            }
+
+        case "libraryBackupReleaseSource":
+            if let sourceId = body["sourceId"] as? String, !sourceId.isEmpty {
+                PicShelfMediaStore.shared.unmarkImporting(sourceId)
+            }
+
+        case "libraryBackupShareResult":
+            if let id = body["id"] as? String,
+               let url = PicShelfBackupManager.shared.shareURL(for: id) {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, let vc = self.viewController else { return }
+                    let avc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    if let pop = avc.popoverPresentationController {
+                        pop.sourceView = vc.view
+                        pop.sourceRect = CGRect(x: vc.view.bounds.midX, y: vc.view.bounds.midY, width: 0, height: 0)
+                        pop.permittedArrowDirections = []
+                    }
+                    vc.present(avc, animated: true)
+                }
+            }
+
+        case "libraryBackupRequestNotifications":
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+                DispatchQueue.main.async {
+                    self?.webView?.evaluateJavaScript(
+                        "window.__iosBackupNotificationsAllowed = \(granted ? "true" : "false"); window.PicShelfBackup && window.PicShelfBackup.onNotificationPermission && window.PicShelfBackup.onNotificationPermission();",
+                        completionHandler: nil
+                    )
+                }
             }
 
         case "authenticateBiometrics":
@@ -602,17 +660,59 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     // MARK: - Native Files Picker (TAR, ZIP, TAR.GZ, TGZ, PDF, Videos, Audio, Photos — Unlimited Multi-Select)
 
     private func openDocumentFilesPicker() {
+        isPickingBackupFile = false
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: true)
         picker.allowsMultipleSelection = true
         picker.delegate = self
         viewController?.present(picker, animated: true)
     }
 
+    private func openBackupFilePicker() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let vc = self.viewController else { return }
+            self.isPickingBackupFile = true
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: true)
+            picker.allowsMultipleSelection = false
+            picker.delegate = self
+            vc.present(picker, animated: true)
+        }
+    }
+
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if isPickingBackupFile {
+            isPickingBackupFile = false
+            DispatchQueue.main.async { [weak self] in
+                self?.webView?.evaluateJavaScript("window.PicShelfBackup && window.PicShelfBackup.onPickCanceled && window.PicShelfBackup.onPickCanceled(false);", completionHandler: nil)
+            }
+            return
+        }
         targetAlbumForImport = nil
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if isPickingBackupFile {
+            isPickingBackupFile = false
+            guard let pickedURL = urls.first else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.webView?.evaluateJavaScript("window.PicShelfBackup && window.PicShelfBackup.onPickCanceled && window.PicShelfBackup.onPickCanceled(false);", completionHandler: nil)
+                }
+                return
+            }
+            importQueue.async { [weak self] in
+                guard let self = self else { return }
+                let openedJson = PicShelfBackupManager.shared.openPickedBackup(from: pickedURL)
+                if let litData = try? JSONSerialization.data(withJSONObject: [openedJson], options: []),
+                   let litArr = String(data: litData, encoding: .utf8) {
+                    DispatchQueue.main.async {
+                        self.webView?.evaluateJavaScript(
+                            "window.__iosBackupPendingJson = (\(litArr))[0]; window.PicShelfBackup && window.PicShelfBackup.checkPending && window.PicShelfBackup.checkPending();",
+                            completionHandler: nil
+                        )
+                    }
+                }
+            }
+            return
+        }
         let capturedAlbum = targetAlbumForImport
         targetAlbumForImport = nil
         guard !urls.isEmpty else { return }

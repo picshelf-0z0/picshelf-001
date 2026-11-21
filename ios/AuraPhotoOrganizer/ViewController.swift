@@ -5,6 +5,7 @@ import Compression
 import ImageIO
 import AVFoundation
 import PDFKit
+import UserNotifications
 
 // MARK: - Durable On-Disk Media Store for iOS (Photos, Videos, Audio, PDF, TAR, ZIP)
 
@@ -44,7 +45,32 @@ final class PicShelfMediaStore {
     func sourceURL(for sourceId: String) -> URL? {
         let safeId = (sourceId as NSString).lastPathComponent
         guard !safeId.isEmpty, safeId == sourceId, !safeId.contains("..") else { return nil }
+        if safeId.hasPrefix("held_") && safeId.hasSuffix(".tar") {
+            let jobId = String(safeId.dropFirst(5).dropLast(4))
+            if UUID(uuidString: jobId) != nil {
+                return PicShelfBackupManager.shared.heldArchiveURL(for: jobId)
+            }
+        }
         return sourcesDir.appendingPathComponent(safeId)
+    }
+
+    func adoptFile(from tempURL: URL, ext: String) -> (sourceId: String, fileURL: URL, size: Int64)? {
+        let safeExt = sanitizeExtension(ext)
+        let sourceId = "\(UUID().uuidString.lowercased()).\(safeExt)"
+        let dstURL = sourcesDir.appendingPathComponent(sourceId)
+        markImporting(sourceId)
+        do {
+            if FileManager.default.fileExists(atPath: dstURL.path) {
+                try FileManager.default.removeItem(at: dstURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: dstURL)
+            let attrs = try FileManager.default.attributesOfItem(atPath: dstURL.path)
+            let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+            return (sourceId, dstURL, size)
+        } catch {
+            unmarkImporting(sourceId)
+            return nil
+        }
     }
 
     func allSourceIds() -> [String] {
@@ -595,6 +621,11 @@ final class PicShelfLocalMediaServer {
         return "http://127.0.0.1:\(port)/\(secretPath)/thumbs/"
     }
 
+    var backupOrigin: String? {
+        guard port > 0 else { return nil }
+        return "http://127.0.0.1:\(port)/\(secretPath)/backup/"
+    }
+
     func start() {
         ensureRunning()
     }
@@ -710,17 +741,22 @@ final class PicShelfLocalMediaServer {
         var sndTv = timeval(tv_sec: 30, tv_usec: 0)
         Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndTv, socklen_t(MemoryLayout<timeval>.size))
 
-        // Read HTTP request headers up to 16 KB
+        // Read HTTP request headers up to 32 KB (preserving any body bytes that arrived in the same packet)
         var reqData = Data()
-        var buf = [UInt8](repeating: 0, count: 4096)
+        var buf = [UInt8](repeating: 0, count: 65536)
         let headerDelim = Data("\r\n\r\n".utf8)
-        while reqData.count < 16384 {
+        var headerEndRange: Range<Data.Index>? = nil
+        while reqData.count < 32768 {
             let n = Darwin.recv(fd, &buf, buf.count, 0)
             if n <= 0 { break }
             reqData.append(buf, count: n)
-            if reqData.range(of: headerDelim) != nil { break }
+            if let r = reqData.range(of: headerDelim) {
+                headerEndRange = r
+                break
+            }
         }
-        guard !reqData.isEmpty, let headerStr = String(data: reqData, encoding: .utf8) else { return }
+        guard let hRange = headerEndRange,
+              let headerStr = String(data: reqData[..<hRange.lowerBound], encoding: .utf8) else { return }
 
         let lines = headerStr.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else { return }
@@ -741,12 +777,12 @@ final class PicShelfLocalMediaServer {
         }
 
         if httpMethod == "OPTIONS" {
-            let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: Range, Content-Type\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n"
+            let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Range, Content-Type\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n"
             _ = writeAll(fd, Data(resp.utf8))
             return
         }
 
-        guard httpMethod == "GET" || httpMethod == "HEAD" else {
+        guard httpMethod == "GET" || httpMethod == "HEAD" || httpMethod == "POST" else {
             sendSimpleError(fd, code: 405, reason: "Method Not Allowed")
             return
         }
@@ -757,14 +793,48 @@ final class PicShelfLocalMediaServer {
         }
 
         let comps = fullURL.pathComponents.filter { $0 != "/" }
-        // Expected: [secretPath, "originals"|"thumbs", token, kind/mode, offset, size, method]
-        guard comps.count >= 7, comps[0] == secretPath else {
+        guard comps.count >= 2, comps[0] == secretPath else {
             sendSimpleError(fd, code: 403, reason: "Forbidden")
             return
         }
 
         let route = comps[1]
-        guard let token = comps[2].removingPercentEncoding,
+        let urlComps = URLComponents(url: fullURL, resolvingAgainstBaseURL: false)
+
+        if route == "backup" && comps.count >= 3 {
+            let endpoint = comps[2]
+            var bodyData = Data(reqData[hRange.upperBound...])
+            if let clStr = headersMap["content-length"], let expectedLen = Int(clStr), expectedLen > 0, expectedLen <= 16 * 1024 * 1024 {
+                if bodyData.count < expectedLen {
+                    bodyData.reserveCapacity(expectedLen)
+                    while bodyData.count < expectedLen {
+                        let remain = min(buf.count, expectedLen - bodyData.count)
+                        let n = Darwin.recv(fd, &buf, remain, 0)
+                        if n <= 0 { break }
+                        bodyData.append(buf, count: n)
+                    }
+                }
+                if bodyData.count > expectedLen {
+                    bodyData = bodyData.prefix(expectedLen)
+                }
+            }
+            var queryMap: [String: String] = [:]
+            for qi in (urlComps?.queryItems ?? []) {
+                queryMap[qi.name] = qi.value ?? ""
+            }
+            let reply = PicShelfBackupManager.shared.handleHTTP(endpoint: endpoint, query: queryMap, body: bodyData)
+            let reason = (reply.status == 200) ? "OK" : "Error"
+            let header = "HTTP/1.1 \(reply.status) \(reason)\r\nContent-Type: \(reply.contentType)\r\nContent-Length: \(reply.body.count)\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+            guard writeAll(fd, Data(header.utf8)) else { return }
+            if httpMethod != "HEAD" && !reply.body.isEmpty {
+                _ = writeAll(fd, reply.body)
+            }
+            return
+        }
+
+        // Expected media route: [secretPath, "originals"|"thumbs", token, kind/mode, offset, size, method]
+        guard comps.count >= 7,
+              let token = comps[2].removingPercentEncoding,
               let offset = UInt64(comps[4]),
               let size = UInt64(comps[5]),
               let method = Int(comps[6]),
@@ -775,7 +845,6 @@ final class PicShelfLocalMediaServer {
         }
 
         let modeOrKind = comps[3].lowercased()
-        let urlComps = URLComponents(url: fullURL, resolvingAgainstBaseURL: false)
         let isHead = (httpMethod == "HEAD")
 
         if route == "originals" {
@@ -1566,6 +1635,1959 @@ class BackdropSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+}
+
+// MARK: - Full Cross-Platform PicShelf Backup & Restore Engine (.picshelf TAR + GZIP + Background + Checkpoints + Notifications)
+
+private enum BackupCRC32 {
+    private static let table: [UInt32] = {
+        var t = [UInt32](repeating: 0, count: 256)
+        for i in 0..<256 {
+            var c = UInt32(i)
+            for _ in 0..<8 {
+                c = (c & 1) != 0 ? (0xEDB88320 ^ (c >> 1)) : (c >> 1)
+            }
+            t[i] = c
+        }
+        return t
+    }()
+
+    static func update(_ crc: UInt32, data: Data) -> UInt32 {
+        var c = crc ^ 0xFFFFFFFF
+        data.withUnsafeBytes { raw in
+            for b in raw {
+                let idx = Int((c ^ UInt32(b)) & 0xFF)
+                c = table[idx] ^ (c >> 8)
+            }
+        }
+        return c ^ 0xFFFFFFFF
+    }
+}
+
+private final class GzipStreamWriter {
+    private let fileHandle: FileHandle
+    private let streamPtr: UnsafeMutablePointer<compression_stream>
+    private let dstBuf: UnsafeMutablePointer<UInt8>
+    private let bufSize = 65536
+    private var crc: UInt32 = 0
+    private var totalIn: UInt64 = 0
+    private var closed = false
+
+    init?(url: URL) {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard let fh = try? FileHandle(forWritingTo: url) else { return nil }
+        let sPtr = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        if compression_stream_init(sPtr, COMPRESSION_STREAM_ENCODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_ERROR {
+            sPtr.deallocate()
+            try? fh.close()
+            return nil
+        }
+        self.fileHandle = fh
+        self.streamPtr = sPtr
+        self.dstBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: bufSize)
+        // Standard RFC 1952 GZIP 10-byte header
+        let hdr = Data([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03])
+        fh.write(hdr)
+    }
+
+    deinit {
+        if !closed { close() }
+        dstBuf.deallocate()
+        streamPtr.deallocate()
+    }
+
+    func write(_ data: Data) -> Bool {
+        guard !closed else { return false }
+        if data.isEmpty { return true }
+        crc = BackupCRC32.update(crc, data: data)
+        totalIn &+= UInt64(data.count)
+        return data.withUnsafeBytes { rawBuf -> Bool in
+            guard let ptr = rawBuf.bindMemory(to: UInt8.self).baseAddress else { return true }
+            streamPtr.pointee.src_ptr = ptr
+            streamPtr.pointee.src_size = data.count
+            while streamPtr.pointee.src_size > 0 {
+                streamPtr.pointee.dst_ptr = dstBuf
+                streamPtr.pointee.dst_size = bufSize
+                let status = compression_stream_process(streamPtr, 0)
+                let produced = bufSize - streamPtr.pointee.dst_size
+                if produced > 0 {
+                    let out = Data(bytesNoCopy: dstBuf, count: produced, deallocator: .none)
+                    fileHandle.write(out)
+                }
+                if status == COMPRESSION_STATUS_ERROR { return false }
+            }
+            return true
+        }
+    }
+
+    func close() {
+        guard !closed else { return }
+        closed = true
+        streamPtr.pointee.src_ptr = UnsafePointer(dstBuf)
+        streamPtr.pointee.src_size = 0
+        while true {
+            streamPtr.pointee.dst_ptr = dstBuf
+            streamPtr.pointee.dst_size = bufSize
+            let status = compression_stream_process(streamPtr, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+            let produced = bufSize - streamPtr.pointee.dst_size
+            if produced > 0 {
+                let out = Data(bytesNoCopy: dstBuf, count: produced, deallocator: .none)
+                fileHandle.write(out)
+            }
+            if status == COMPRESSION_STATUS_END || status == COMPRESSION_STATUS_ERROR { break }
+        }
+        compression_stream_destroy(streamPtr)
+        var trailer = Data(capacity: 8)
+        var cLE = crc.littleEndian
+        var sLE = UInt32(truncatingIfNeeded: totalIn).littleEndian
+        withUnsafeBytes(of: &cLE) { trailer.append(contentsOf: $0) }
+        withUnsafeBytes(of: &sLE) { trailer.append(contentsOf: $0) }
+        fileHandle.write(trailer)
+        try? fileHandle.close()
+    }
+}
+
+private enum BackupGzipHelper {
+    static func compress(_ data: Data) -> Data? {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("ps_gz_\(UUID().uuidString).gz")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard let w = GzipStreamWriter(url: tmp) else { return nil }
+        guard w.write(data) else { w.close(); return nil }
+        w.close()
+        return try? Data(contentsOf: tmp)
+    }
+
+    static func decompress(_ data: Data) -> Data? {
+        let tmpIn = FileManager.default.temporaryDirectory.appendingPathComponent("ps_gzi_\(UUID().uuidString).gz")
+        let tmpOut = FileManager.default.temporaryDirectory.appendingPathComponent("ps_gzo_\(UUID().uuidString).bin")
+        defer {
+            try? FileManager.default.removeItem(at: tmpIn)
+            try? FileManager.default.removeItem(at: tmpOut)
+        }
+        guard (try? data.write(to: tmpIn)) != nil,
+              PicShelfMediaStore.shared.decompressGzipFile(from: tmpIn, to: tmpOut) != nil else { return nil }
+        return try? Data(contentsOf: tmpOut)
+    }
+}
+
+private enum BackupTarHelper {
+    static let blockSize: UInt64 = 512
+    static let maxOctalSize: UInt64 = 8_589_934_591
+
+    static func padding(for size: UInt64) -> Int {
+        return Int((blockSize - (size % blockSize)) % blockSize)
+    }
+
+    static func span(for size: UInt64) -> UInt64 {
+        return blockSize + size + UInt64(padding(for: size))
+    }
+
+    static func header(name: String, size: UInt64, mtimeSeconds: UInt64) -> Data {
+        var bytes = [UInt8](repeating: 0, count: 512)
+        let nameUtf8 = Array(name.utf8.prefix(100))
+        for (i, b) in nameUtf8.enumerated() { bytes[i] = b }
+
+        func writeOctal(_ val: UInt64, offset: Int, length: Int) {
+            let oct = String(val, radix: 8)
+            let digits = length - 1
+            let padded = oct.count >= digits ? String(oct.suffix(digits)) : (String(repeating: "0", count: digits - oct.count) + oct)
+            for (i, b) in padded.utf8.enumerated() { bytes[offset + i] = b }
+            bytes[offset + length - 1] = 0
+        }
+
+        writeOctal(0o644, offset: 100, length: 8)
+        writeOctal(0, offset: 108, length: 8)
+        writeOctal(0, offset: 116, length: 8)
+        if size <= maxOctalSize {
+            writeOctal(size, offset: 124, length: 12)
+        } else {
+            bytes[124] = 0x80
+            var v = size
+            for idx in stride(from: 135, through: 125, by: -1) {
+                bytes[idx] = UInt8(v & 0xFF)
+                v >>= 8
+            }
+        }
+        writeOctal(min(mtimeSeconds, maxOctalSize), offset: 136, length: 12)
+        for i in 148..<156 { bytes[i] = 0x20 }
+        bytes[156] = UInt8(ascii: "0")
+        for (i, b) in "ustar".utf8.enumerated() { bytes[257 + i] = b }
+        bytes[263] = UInt8(ascii: "0")
+        bytes[264] = UInt8(ascii: "0")
+        for (i, b) in "picshelf".utf8.enumerated() { bytes[265 + i] = b }
+        for (i, b) in "picshelf".utf8.enumerated() { bytes[297 + i] = b }
+
+        var sum: UInt64 = 0
+        for b in bytes { sum += UInt64(b) }
+        let sumOct = String(sum, radix: 8)
+        let sumStr = sumOct.count >= 6 ? String(sumOct.suffix(6)) : (String(repeating: "0", count: 6 - sumOct.count) + sumOct)
+        for (i, b) in sumStr.utf8.enumerated() { bytes[148 + i] = b }
+        bytes[154] = 0
+        bytes[155] = 0x20
+        return Data(bytes)
+    }
+
+    static func isHeader(_ data: Data) -> Bool {
+        guard data.count >= 512 else { return false }
+        var allZero = true
+        for b in data.prefix(512) { if b != 0 { allZero = false; break } }
+        if allZero { return false }
+        let chkStr = String(data: data.subdata(in: 148..<156), encoding: .ascii)?
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\0"))) ?? ""
+        guard let stored = UInt64(chkStr, radix: 8) else { return false }
+        var sum: UInt64 = 0
+        for i in 0..<512 {
+            sum += (i >= 148 && i < 156) ? 0x20 : UInt64(data[i])
+        }
+        return sum == stored
+    }
+
+    static func name(_ data: Data) -> String {
+        guard data.count >= 100 else { return "" }
+        var end = 0
+        while end < 100 && data[end] != 0 { end += 1 }
+        return String(data: data.subdata(in: 0..<end), encoding: .utf8) ?? ""
+    }
+}
+
+final class PicShelfBackupManager {
+    static let shared = PicShelfBackupManager()
+
+    private static let locatorName = "picshelf/locator.json"
+    private static let freeReserve: UInt64 = 64 * 1024 * 1024
+    private static let activeStates: Set<String> = ["preparing", "queued", "running", "cancelling"]
+    private static let readmeText = """
+PicShelf full library backup.
+
+To restore everything — photos, videos, audio, albums, favorites, Dock, Gallery and Trash:
+  Open PicShelf -> Settings -> Import Backup -> choose this file.
+
+Keep a copy somewhere safe (iCloud Drive, Google Drive, a computer or another drive).
+The media/ folder inside also holds your original files directly if you ever open this archive on a computer.
+"""
+
+    weak var webView: WKWebView?
+
+    private let rootDir: URL
+    private let pickedDir: URL
+    private let stateLock = NSLock()
+    private let workerQueue = DispatchQueue(label: "com.picshelf.ios.backup.worker", qos: .utility)
+
+    private final class PreparingState {
+        let id: String
+        let dir: URL
+        var indexWriter: GzipStreamWriter?
+        var planHandle: FileHandle?
+        var stageHandle: FileHandle?
+        var stageExpected: UInt64 = 0
+        var stageWritten: UInt64 = 0
+        var entries: Int = 0
+        var bytes: UInt64 = 0
+
+        init(id: String, dir: URL) {
+            self.id = id
+            self.dir = dir
+        }
+    }
+
+    private final class ReaderState {
+        let token: String
+        let sourceURL: URL
+        let ownedCopyURL: URL?
+        let name: String
+        let fileSize: UInt64
+        let isFull: Bool
+        let tableJson: String
+        let indexOffset: UInt64
+        let indexLength: UInt64
+        let plainIndexURL: URL
+        let plainFH: FileHandle
+        let plainSize: UInt64
+        var plainPos: UInt64 = 0
+        var closed: Bool = false
+
+        init(token: String, sourceURL: URL, ownedCopyURL: URL?, name: String, fileSize: UInt64,
+             isFull: Bool, tableJson: String, indexOffset: UInt64, indexLength: UInt64,
+             plainIndexURL: URL, plainFH: FileHandle, plainSize: UInt64) {
+            self.token = token
+            self.sourceURL = sourceURL
+            self.ownedCopyURL = ownedCopyURL
+            self.name = name
+            self.fileSize = fileSize
+            self.isFull = isFull
+            self.tableJson = tableJson
+            self.indexOffset = indexOffset
+            self.indexLength = indexLength
+            self.plainIndexURL = plainIndexURL
+            self.plainFH = plainFH
+            self.plainSize = plainSize
+        }
+    }
+
+    private var preparing: PreparingState? = nil
+    private var liveJobId: String? = nil
+    private var liveDone: UInt64 = 0
+    private var liveTotal: UInt64 = 0
+    private var interruptedPrepare: Bool = false
+    private var activeWorkerJobId: String? = nil
+    private var cancelRequestedJobIds: Set<String> = []
+    private var pausedByOS: Bool = false
+    private var readers: [String: ReaderState] = [:]
+
+    private init() {
+        let fm = FileManager.default
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        rootDir = appSupport.appendingPathComponent("PicShelfBackupJobs", isDirectory: true)
+        pickedDir = rootDir.appendingPathComponent("_picked", isDirectory: true)
+        try? fm.createDirectory(at: rootDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: pickedDir, withIntermediateDirectories: true)
+
+        var rv = URLResourceValues()
+        rv.isExcludedFromBackup = true
+        var mRoot = rootDir
+        try? mRoot.setResourceValues(rv)
+
+        cleanupOnLaunch()
+    }
+
+    private func cleanupOnLaunch() {
+        let fm = FileManager.default
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        guard let dirs = try? fm.contentsOfDirectory(at: rootDir, includingPropertiesForKeys: nil) else { return }
+        for d in dirs {
+            if d.lastPathComponent == "_picked" {
+                try? fm.removeItem(at: d)
+                try? fm.createDirectory(at: pickedDir, withIntermediateDirectories: true)
+                continue
+            }
+            guard let job = readJob(in: d) else {
+                try? fm.removeItem(at: d)
+                continue
+            }
+            let st = job["state"] as? String ?? ""
+            let created = (job["createdAt"] as? NSNumber)?.int64Value ?? nowMs
+            let age = nowMs - created
+            if st == "preparing" {
+                interruptedPrepare = true
+                deleteJobDir(d, job: job)
+            } else if st == "running" {
+                // App was terminated while running -> re-queue cleanly from checkpoint
+                var updated = job
+                updated["state"] = "queued"
+                writeJob(updated, in: d)
+            } else if (st == "cancelled" || st == "failed") && age > 2 * 86400 * 1000 {
+                deleteJobDir(d, job: job)
+            } else if st == "done" && (job["type"] as? String) == "export" && age > 14 * 86400 * 1000 {
+                deleteJobDir(d, job: job)
+            }
+            // Protect any pending restore's adopted source archive from retention cleanup
+            if (job["type"] as? String) == "restore", st == "done",
+               let res = job["result"] as? [String: Any],
+               let sid = res["sourceId"] as? String, !sid.isEmpty {
+                PicShelfMediaStore.shared.markImporting(sid)
+            }
+        }
+    }
+
+    func heldArchiveURL(for jobId: String) -> URL? {
+        guard UUID(uuidString: jobId) != nil else { return nil }
+        let u = rootDir.appendingPathComponent(jobId, isDirectory: true).appendingPathComponent("held.tar")
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+    }
+
+    private func documentsDir() -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        try? fm.createDirectory(at: docs, withIntermediateDirectories: true)
+        return docs
+    }
+
+    private func availableDiskBytes() -> Int64 {
+        let url = documentsDir()
+        if let vals = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let cap = vals.volumeAvailableCapacityForImportantUsage {
+            return cap
+        }
+        if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
+           let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value {
+            return free
+        }
+        return Int64.max / 2
+    }
+
+    func freeBytesJson() -> String {
+        let free = availableDiskBytes()
+        return jsonString(["app": free, "downloads": free])
+    }
+
+    private func jobDir(for id: String) -> URL? {
+        guard UUID(uuidString: id) != nil else { return nil }
+        let d = rootDir.appendingPathComponent(id, isDirectory: true)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue else { return nil }
+        return d
+    }
+
+    private func readJob(in dir: URL) -> [String: Any]? {
+        let u = dir.appendingPathComponent("job.json")
+        guard let data = try? Data(contentsOf: u),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj
+    }
+
+    private func writeJob(_ job: [String: Any], in dir: URL) {
+        let u = dir.appendingPathComponent("job.json")
+        if let data = try? JSONSerialization.data(withJSONObject: job, options: []) {
+            try? data.write(to: u, options: .atomic)
+        }
+    }
+
+    private func updateJob(id: String, _ mutate: (inout [String: Any]) -> Void) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let d = jobDir(for: id), var job = readJob(in: d) else { return }
+        mutate(&job)
+        writeJob(job, in: d)
+    }
+
+    private func deleteJobDir(_ dir: URL, job: [String: Any]?) {
+        if let partial = job?["partial"] as? String, !partial.isEmpty {
+            try? FileManager.default.removeItem(atPath: partial)
+        }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func allJobsUnlocked() -> [[String: Any]] {
+        guard let dirs = try? FileManager.default.contentsOfDirectory(at: rootDir, includingPropertiesForKeys: nil) else { return [] }
+        return dirs.compactMap { $0.lastPathComponent == "_picked" ? nil : readJob(in: $0) }
+    }
+
+    private func jsonString(_ obj: Any) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []),
+              let str = String(data: data, encoding: .utf8) else { return "{}" }
+        return str
+    }
+
+    func pushStatusToWebView() {
+        let statusStr = statusJson()
+        let freeStr = freeBytesJson()
+        guard let sLit = try? JSONSerialization.data(withJSONObject: [statusStr], options: []),
+              let sArr = String(data: sLit, encoding: .utf8),
+              let fLit = try? JSONSerialization.data(withJSONObject: [freeStr], options: []),
+              let fArr = String(data: fLit, encoding: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(
+                "window.__iosBackupStatusJson = (\(sArr))[0]; window.__iosBackupFreeBytesJson = (\(fArr))[0];",
+                completionHandler: nil
+            )
+        }
+    }
+
+    func statusJson() -> String {
+        stateLock.lock()
+        let prepId = preparing?.id
+        let jobs = allJobsUnlocked()
+        let currentLiveId = liveJobId
+        let currentLiveDone = liveDone
+        let interrupted = interruptedPrepare
+        stateLock.unlock()
+
+        let active = jobs.first { Self.activeStates.contains(($0["state"] as? String) ?? "") }
+        let latest = jobs.max {
+            (($0["createdAt"] as? NSNumber)?.int64Value ?? 0) < (($1["createdAt"] as? NSNumber)?.int64Value ?? 0)
+        }
+        let chosen: [String: Any]?
+        if let pid = prepId, let d = jobDir(for: pid), let j = readJob(in: d) {
+            chosen = j
+        } else {
+            chosen = active ?? latest
+        }
+
+        var out: [String: Any] = ["interrupted": interrupted]
+        if let job = chosen {
+            let jid = job["id"] as? String ?? ""
+            out["id"] = jid
+            out["type"] = job["type"] as? String ?? ""
+            out["state"] = job["state"] as? String ?? ""
+            out["total"] = (job["totalBytes"] as? NSNumber)?.uint64Value ?? 0
+            out["error"] = job["error"] as? String ?? ""
+            let doneVal = (currentLiveId == jid) ? currentLiveDone : ((job["doneBytes"] as? NSNumber)?.uint64Value ?? 0)
+            out["done"] = doneVal
+            if let res = job["result"] as? [String: Any] {
+                out["result"] = res
+            }
+        }
+        return jsonString(out)
+    }
+
+    func clearInterrupted() {
+        stateLock.lock()
+        interruptedPrepare = false
+        stateLock.unlock()
+        pushStatusToWebView()
+    }
+
+    func acknowledge(id: String) {
+        stateLock.lock()
+        if let d = jobDir(for: id), let job = readJob(in: d) {
+            let st = job["state"] as? String ?? ""
+            if !Self.activeStates.contains(st) {
+                deleteJobDir(d, job: job)
+            }
+        }
+        stateLock.unlock()
+        pushStatusToWebView()
+    }
+
+    func cancelJob(id: String) {
+        stateLock.lock()
+        cancelRequestedJobIds.insert(id)
+        if let d = jobDir(for: id), var job = readJob(in: d) {
+            let st = job["state"] as? String ?? ""
+            if Self.activeStates.contains(st) {
+                job["state"] = "cancelling"
+                writeJob(job, in: d)
+            }
+        }
+        let isRunningThis = (activeWorkerJobId == id)
+        stateLock.unlock()
+        if !isRunningThis {
+            cleanupCancelled(id: id)
+        }
+        pushStatusToWebView()
+    }
+
+    func shareURL(for id: String) -> URL? {
+        guard let d = jobDir(for: id), let job = readJob(in: d),
+              let res = job["result"] as? [String: Any] else { return nil }
+        if let name = res["name"] as? String, !name.isEmpty {
+            let u = documentsDir().appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: u.path) { return u }
+        }
+        if let uri = res["uri"] as? String, let u = URL(string: uri), u.isFileURL,
+           FileManager.default.fileExists(atPath: u.path) {
+            return u
+        }
+        return nil
+    }
+
+    func resumeQueuedJobsIfNeeded() {
+        stateLock.lock()
+        pausedByOS = false
+        let jobs = allJobsUnlocked()
+        let alreadyActive = (activeWorkerJobId != nil)
+        stateLock.unlock()
+
+        guard !alreadyActive else {
+            pushStatusToWebView()
+            return
+        }
+        if let queued = jobs.first(where: { ($0["state"] as? String) == "queued" }),
+           let jid = queued["id"] as? String {
+            scheduleWorker(jobId: jid)
+        }
+        pushStatusToWebView()
+    }
+
+    // MARK: - HTTP Router for Loopback Backup Endpoints
+
+    func handleHTTP(endpoint: String, query: [String: String], body: Data) -> (status: Int, contentType: String, body: Data) {
+        func jsonResp(_ str: String) -> (Int, String, Data) {
+            return (200, "application/json; charset=utf-8", Data(str.utf8))
+        }
+        func boolResp(_ ok: Bool) -> (Int, String, Data) {
+            return jsonResp(ok ? "{\"ok\":true}" : "{\"ok\":false}")
+        }
+
+        switch endpoint {
+        case "export-begin":
+            let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            let name = obj["name"] as? String ?? "PicShelf-backup.picshelf"
+            let copy = obj["copy"] as? String ?? "{}"
+            let res = beginExport(name: name, copy: copy)
+            pushStatusToWebView()
+            return jsonResp(res)
+
+        case "export-index":
+            let jobId = query["id"] ?? ""
+            let ok = appendIndex(id: jobId, data: body)
+            return boolResp(ok)
+
+        case "export-plan":
+            let jobId = query["id"] ?? ""
+            let ok = appendPlan(id: jobId, data: body)
+            return boolResp(ok)
+
+        case "export-stage-begin":
+            let jobId = query["id"] ?? ""
+            let stage = Int(query["stage"] ?? "-1") ?? -1
+            let length = UInt64(query["length"] ?? "0") ?? 0
+            return boolResp(stageBegin(id: jobId, stage: stage, length: length))
+
+        case "export-stage-append":
+            let jobId = query["id"] ?? ""
+            let base64 = String(data: body, encoding: .utf8) ?? ""
+            return boolResp(stageAppend(id: jobId, base64: base64))
+
+        case "export-stage-end":
+            let jobId = query["id"] ?? ""
+            let complete = (query["complete"] ?? "1") != "0"
+            return boolResp(stageEnd(id: jobId, complete: complete))
+
+        case "export-start":
+            let jobId = query["id"] ?? ""
+            let res = finishPrepareAndStartExport(id: jobId)
+            pushStatusToWebView()
+            return jsonResp(res)
+
+        case "status":
+            return jsonResp(statusJson())
+
+        case "free-bytes":
+            return jsonResp(freeBytesJson())
+
+        case "entries":
+            let token = query["token"] ?? ""
+            return jsonResp(entriesJson(token: token))
+
+        case "read":
+            let token = query["token"] ?? ""
+            let maxBytes = Int(query["max"] ?? "1048576") ?? 1048576
+            let r = readIndexChunk(token: token, maxBytes: maxBytes)
+            let resp = jsonString(["ok": r.ok, "chunk": r.chunk, "progress": r.progress])
+            return jsonResp(resp)
+
+        case "restore-start":
+            let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            let token = obj["token"] as? String ?? ""
+            let entries = obj["entries"] as? String ?? "[]"
+            let copy = obj["copy"] as? String ?? "{}"
+            let res = beginAndStartRestore(token: token, entriesJson: entries, copy: copy)
+            pushStatusToWebView()
+            return jsonResp(res)
+
+        case "restore-result":
+            let jobId = query["id"] ?? ""
+            return jsonResp(restoreResultJson(id: jobId))
+
+        case "reopen":
+            let jobId = query["id"] ?? ""
+            return jsonResp(reopenRestoreIndex(id: jobId))
+
+        default:
+            return (404, "application/json", Data("{\"ok\":false,\"error\":\"unknown\"}".utf8))
+        }
+    }
+
+    // MARK: - Export Phase A
+
+    private static func safeBackupFileName(_ requested: String) -> String {
+        var base = (requested as NSString).lastPathComponent
+        if base.lowercased().hasSuffix(".picshelf") { base = String(base.dropLast(9)) }
+        if base.lowercased().hasSuffix(".json") { base = String(base.dropLast(5)) }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        let cleaned = String(base.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "._-"))
+        let stem = cleaned.isEmpty ? "PicShelf-backup" : String(cleaned.prefix(100))
+        return "\(stem).picshelf"
+    }
+
+    private func uniqueBackupURL(named fileName: String) -> (url: URL, name: String) {
+        let dir = documentsDir()
+        let fm = FileManager.default
+        let base = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        var candidate = dir.appendingPathComponent(fileName)
+        if !fm.fileExists(atPath: candidate.path) { return (candidate, fileName) }
+        for i in 1..<1000 {
+            let next = ext.isEmpty ? "\(base) (\(i))" : "\(base) (\(i)).\(ext)"
+            candidate = dir.appendingPathComponent(next)
+            if !fm.fileExists(atPath: candidate.path) { return (candidate, next) }
+        }
+        let fallback = "\(base)_\(Int(Date().timeIntervalSince1970)).picshelf"
+        return (dir.appendingPathComponent(fallback), fallback)
+    }
+
+    private func createNewJobUnlocked(type: String, copyJson: String, extra: [String: Any]) -> (id: String, dir: URL)? {
+        let jobs = allJobsUnlocked()
+        if preparing != nil { return nil }
+        if jobs.contains(where: { Self.activeStates.contains(($0["state"] as? String) ?? "") }) { return nil }
+        if jobs.contains(where: { ($0["type"] as? String) == "restore" && ($0["state"] as? String) == "done" }) { return nil }
+
+        // Clear previously acknowledged / old finished jobs
+        if let dirs = try? FileManager.default.contentsOfDirectory(at: rootDir, includingPropertiesForKeys: nil) {
+            for d in dirs where d.lastPathComponent != "_picked" {
+                deleteJobDir(d, job: readJob(in: d))
+            }
+        }
+
+        let id = UUID().uuidString.lowercased()
+        let dir = rootDir.appendingPathComponent(id, isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else { return nil }
+
+        let copyObj = (try? JSONSerialization.jsonObject(with: Data(copyJson.utf8)) as? [String: Any]) ?? [:]
+        var job: [String: Any] = [
+            "version": 1,
+            "id": id,
+            "type": type,
+            "state": "preparing",
+            "createdAt": Int64(Date().timeIntervalSince1970 * 1000),
+            "copy": copyObj
+        ]
+        for (k, v) in extra { job[k] = v }
+        writeJob(job, in: dir)
+        return (id, dir)
+    }
+
+    private func beginExport(name: String, copy: String) -> String {
+        let safe = Self.safeBackupFileName(name)
+        stateLock.lock()
+        guard let created = createNewJobUnlocked(type: "export", copyJson: copy, extra: ["name": safe]) else {
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "busy"])
+        }
+        let stagedDir = created.dir.appendingPathComponent("staged", isDirectory: true)
+        try? FileManager.default.createDirectory(at: stagedDir, withIntermediateDirectories: true)
+        let indexURL = created.dir.appendingPathComponent("index.json.gz")
+        let planURL = created.dir.appendingPathComponent("plan.jsonl")
+        FileManager.default.createFile(atPath: planURL.path, contents: nil)
+        guard let gzWriter = GzipStreamWriter(url: indexURL),
+              let planFH = try? FileHandle(forWritingTo: planURL) else {
+            try? FileManager.default.removeItem(at: created.dir)
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "storage"])
+        }
+        let prep = PreparingState(id: created.id, dir: created.dir)
+        prep.indexWriter = gzWriter
+        prep.planHandle = planFH
+        preparing = prep
+        stateLock.unlock()
+        return jsonString(["ok": true, "id": created.id])
+    }
+
+    private func appendIndex(id: String, data: Data) -> Bool {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, let w = prep.indexWriter else {
+            stateLock.unlock()
+            return false
+        }
+        let ok = w.write(data)
+        stateLock.unlock()
+        if !ok { abortPrepare(id: id) }
+        return ok
+    }
+
+    private func appendPlan(id: String, data: Data) -> Bool {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, let planFH = prep.planHandle else {
+            stateLock.unlock()
+            return false
+        }
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            stateLock.unlock()
+            abortPrepare(id: id)
+            return false
+        }
+        var lines = Data()
+        for entry in arr {
+            guard let name = entry["name"] as? String, !name.isEmpty, name.count <= 95,
+                  let lenNum = entry["length"] as? NSNumber else {
+                stateLock.unlock()
+                abortPrepare(id: id)
+                return false
+            }
+            let length = lenNum.uint64Value
+            let t = entry["t"] as? String ?? ""
+            if t == "a" {
+                guard let src = entry["source"] as? String,
+                      PicShelfMediaStore.shared.sourceURL(for: src) != nil else {
+                    stateLock.unlock()
+                    abortPrepare(id: id)
+                    return false
+                }
+            } else if t == "f" {
+                guard let stageIdx = (entry["stage"] as? NSNumber)?.intValue else {
+                    stateLock.unlock()
+                    abortPrepare(id: id)
+                    return false
+                }
+                let stURL = prep.dir.appendingPathComponent("staged/\(stageIdx)")
+                guard FileManager.default.fileExists(atPath: stURL.path) else {
+                    stateLock.unlock()
+                    abortPrepare(id: id)
+                    return false
+                }
+            } else {
+                stateLock.unlock()
+                abortPrepare(id: id)
+                return false
+            }
+            if let lineData = try? JSONSerialization.data(withJSONObject: entry, options: []) {
+                lines.append(lineData)
+                lines.append(0x0A)
+            }
+            prep.entries += 1
+            prep.bytes &+= length
+        }
+        planFH.write(lines)
+        stateLock.unlock()
+        return true
+    }
+
+    private func stageBegin(id: String, stage: Int, length: UInt64) -> Bool {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, prep.stageHandle == nil, stage >= 0 else {
+            stateLock.unlock()
+            return false
+        }
+        if UInt64(max(0, availableDiskBytes())) < length + Self.freeReserve {
+            stateLock.unlock()
+            abortPrepare(id: id)
+            return false
+        }
+        let stURL = prep.dir.appendingPathComponent("staged/\(stage)")
+        FileManager.default.createFile(atPath: stURL.path, contents: nil)
+        guard let fh = try? FileHandle(forWritingTo: stURL) else {
+            stateLock.unlock()
+            abortPrepare(id: id)
+            return false
+        }
+        prep.stageHandle = fh
+        prep.stageExpected = length
+        prep.stageWritten = 0
+        stateLock.unlock()
+        return true
+    }
+
+    private func stageAppend(id: String, base64: String) -> Bool {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, let fh = prep.stageHandle else {
+            stateLock.unlock()
+            return false
+        }
+        guard let decoded = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
+            stateLock.unlock()
+            abortPrepare(id: id)
+            return false
+        }
+        if prep.stageWritten + UInt64(decoded.count) > prep.stageExpected {
+            stateLock.unlock()
+            abortPrepare(id: id)
+            return false
+        }
+        fh.write(decoded)
+        prep.stageWritten += UInt64(decoded.count)
+        stateLock.unlock()
+        return true
+    }
+
+    private func stageEnd(id: String, complete: Bool) -> Bool {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, let fh = prep.stageHandle else {
+            stateLock.unlock()
+            return false
+        }
+        try? fh.close()
+        prep.stageHandle = nil
+        let valid = !complete || (prep.stageWritten == prep.stageExpected)
+        stateLock.unlock()
+        if !valid { abortPrepare(id: id) }
+        return valid
+    }
+
+    func abortPrepare(id: String) {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id else {
+            stateLock.unlock()
+            return
+        }
+        preparing = nil
+        try? prep.stageHandle?.close()
+        prep.indexWriter?.close()
+        try? prep.planHandle?.close()
+        try? FileManager.default.removeItem(at: prep.dir)
+        stateLock.unlock()
+        pushStatusToWebView()
+    }
+
+    private func finishPrepareAndStartExport(id: String) -> String {
+        stateLock.lock()
+        guard let prep = preparing, prep.id == id, prep.stageHandle == nil else {
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "busy"])
+        }
+        prep.indexWriter?.close()
+        prep.indexWriter = nil
+        try? prep.planHandle?.close()
+        prep.planHandle = nil
+        preparing = nil
+
+        let indexURL = prep.dir.appendingPathComponent("index.json.gz")
+        let indexSize = ((try? FileManager.default.attributesOfItem(atPath: indexURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        let totalBytes = prep.bytes + UInt64(prep.entries) * 1024 + indexSize + 65536
+        let needed = prep.bytes + indexSize + Self.freeReserve
+
+        if UInt64(max(0, availableDiskBytes())) < needed {
+            try? FileManager.default.removeItem(at: prep.dir)
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "space", "needed": needed])
+        }
+
+        if var job = readJob(in: prep.dir) {
+            job["state"] = "queued"
+            job["entries"] = prep.entries
+            job["mediaBytes"] = prep.bytes
+            job["totalBytes"] = totalBytes
+            writeJob(job, in: prep.dir)
+        }
+        stateLock.unlock()
+
+        scheduleWorker(jobId: id)
+        let st = statusJson()
+        return jsonString(["ok": true, "id": id, "total": totalBytes, "status": st])
+    }
+
+    // MARK: - Import / Reader Phase
+
+    func openPickedBackup(from url: URL) -> String {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        let token = UUID().uuidString.lowercased()
+        let copyURL = pickedDir.appendingPathComponent("\(token).backup")
+        do {
+            if FileManager.default.fileExists(atPath: copyURL.path) {
+                try FileManager.default.removeItem(at: copyURL)
+            }
+            try FileManager.default.copyItem(at: url, to: copyURL)
+        } catch {
+            return jsonString(["ok": false, "error": "read"])
+        }
+        return openBackupFile(at: copyURL, ownedCopy: copyURL, displayName: url.lastPathComponent, token: token)
+    }
+
+    private func openBackupFile(at fileURL: URL, ownedCopy: URL?, displayName: String, token: String) -> String {
+        guard let fh = try? FileHandle(forReadingFrom: fileURL),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let fileSize = (attrs[.size] as? NSNumber)?.uint64Value else {
+            if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+            return jsonString(["ok": false, "error": "read"])
+        }
+        defer { try? fh.close() }
+
+        let plainIndexURL = pickedDir.appendingPathComponent("\(token)_index.json")
+
+        // Check if this is a full .picshelf backup by inspecting the final 2048-byte locator
+        if let locator = readLocator(from: fh, fileSize: fileSize) {
+            let maxIndex: UInt64 = 1024 * 1024 * 1024
+            guard locator.indexLength <= maxIndex, locator.tableLength <= maxIndex else {
+                if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                return jsonString(["ok": false, "error": "too_large"])
+            }
+            // Read and decompress entries.json.gz
+            guard let tableGz = readRange(from: fh, offset: locator.tableOffset, length: locator.tableLength),
+                  let tableData = BackupGzipHelper.decompress(tableGz),
+                  let tableStr = String(data: tableData, encoding: .utf8) else {
+                if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                return jsonString(["ok": false, "error": "read"])
+            }
+            // Stream-decompress index.json.gz to disk (constant 64 KB RAM)
+            let tmpGz = pickedDir.appendingPathComponent("\(token)_index.gz")
+            defer { try? FileManager.default.removeItem(at: tmpGz) }
+            guard copyRangeToFile(from: fh, offset: locator.indexOffset, length: locator.indexLength, to: tmpGz),
+                  PicShelfMediaStore.shared.decompressGzipFile(from: tmpGz, to: plainIndexURL) != nil,
+                  let plainFH = try? FileHandle(forReadingFrom: plainIndexURL),
+                  let pAttrs = try? FileManager.default.attributesOfItem(atPath: plainIndexURL.path),
+                  let pSize = (pAttrs[.size] as? NSNumber)?.uint64Value else {
+                try? FileManager.default.removeItem(at: plainIndexURL)
+                if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                return jsonString(["ok": false, "error": "read"])
+            }
+
+            let state = ReaderState(
+                token: token, sourceURL: fileURL, ownedCopyURL: ownedCopy,
+                name: String(displayName.prefix(200)), fileSize: fileSize,
+                isFull: true, tableJson: tableStr,
+                indexOffset: locator.indexOffset, indexLength: locator.indexLength,
+                plainIndexURL: plainIndexURL, plainFH: plainFH, plainSize: pSize
+            )
+            stateLock.lock()
+            readers[token] = state
+            stateLock.unlock()
+
+            return jsonString([
+                "ok": true,
+                "token": token,
+                "name": state.name,
+                "size": locator.indexLength,
+                "full": true,
+                "entries": locator.entries,
+                "backupSize": fileSize
+            ])
+        } else {
+            // Organization-only JSON or GZIP JSON backup
+            let maxText: UInt64 = 512 * 1024 * 1024
+            guard fileSize <= maxText else {
+                if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                return jsonString(["ok": false, "error": "too_large"])
+            }
+            try? fh.seek(toOffset: 0)
+            let head = (try? fh.read(upToCount: 2)) ?? Data()
+            let isGzip = (head.count == 2 && head[0] == 0x1f && head[1] == 0x8b)
+            if isGzip {
+                guard PicShelfMediaStore.shared.decompressGzipFile(from: fileURL, to: plainIndexURL) != nil else {
+                    if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                    return jsonString(["ok": false, "error": "read"])
+                }
+            } else {
+                do {
+                    try FileManager.default.copyItem(at: fileURL, to: plainIndexURL)
+                } catch {
+                    if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                    return jsonString(["ok": false, "error": "read"])
+                }
+            }
+            guard let plainFH = try? FileHandle(forReadingFrom: plainIndexURL),
+                  let pAttrs = try? FileManager.default.attributesOfItem(atPath: plainIndexURL.path),
+                  let pSize = (pAttrs[.size] as? NSNumber)?.uint64Value else {
+                try? FileManager.default.removeItem(at: plainIndexURL)
+                if let own = ownedCopy { try? FileManager.default.removeItem(at: own) }
+                return jsonString(["ok": false, "error": "read"])
+            }
+            let state = ReaderState(
+                token: token, sourceURL: fileURL, ownedCopyURL: ownedCopy,
+                name: String(displayName.prefix(200)), fileSize: fileSize,
+                isFull: false, tableJson: "", indexOffset: 0, indexLength: 0,
+                plainIndexURL: plainIndexURL, plainFH: plainFH, plainSize: pSize
+            )
+            stateLock.lock()
+            readers[token] = state
+            stateLock.unlock()
+
+            return jsonString([
+                "ok": true,
+                "token": token,
+                "name": state.name,
+                "size": fileSize,
+                "full": false
+            ])
+        }
+    }
+
+    private struct LocatorInfo {
+        let indexOffset: UInt64
+        let indexLength: UInt64
+        let tableOffset: UInt64
+        let tableLength: UInt64
+        let entries: Int
+    }
+
+    private func readLocator(from fh: FileHandle, fileSize: UInt64) -> LocatorInfo? {
+        guard fileSize >= 2048 else { return nil }
+        guard let tail = readRange(from: fh, offset: fileSize - 2048, length: 2048), tail.count == 2048 else { return nil }
+        let hdr = tail.subdata(in: 0..<512)
+        guard BackupTarHelper.isHeader(hdr), BackupTarHelper.name(hdr) == Self.locatorName else { return nil }
+        let jsonSlice = tail.subdata(in: 512..<1024)
+        guard let jsonStr = String(data: jsonSlice, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let jsonData = jsonStr.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              (obj["format"] as? String) == "picshelf-backup",
+              (obj["version"] as? NSNumber)?.intValue == 1,
+              let idxArr = obj["index"] as? [NSNumber], idxArr.count >= 2,
+              let tblArr = obj["table"] as? [NSNumber], tblArr.count >= 2 else { return nil }
+        let io = idxArr[0].uint64Value, il = idxArr[1].uint64Value
+        let to = tblArr[0].uint64Value, tl = tblArr[1].uint64Value
+        guard io <= fileSize, il <= fileSize - io, to <= fileSize, tl <= fileSize - to else { return nil }
+        let entries = (obj["entries"] as? NSNumber)?.intValue ?? 0
+        return LocatorInfo(indexOffset: io, indexLength: il, tableOffset: to, tableLength: tl, entries: entries)
+    }
+
+    private func readRange(from fh: FileHandle, offset: UInt64, length: UInt64) -> Data? {
+        guard length <= 64 * 1024 * 1024 else { return nil }
+        do {
+            try fh.seek(toOffset: offset)
+            return try fh.read(upToCount: Int(length))
+        } catch {
+            return nil
+        }
+    }
+
+    private func copyRangeToFile(from fh: FileHandle, offset: UInt64, length: UInt64, to dstURL: URL) -> Bool {
+        FileManager.default.createFile(atPath: dstURL.path, contents: nil)
+        guard let outFH = try? FileHandle(forWritingTo: dstURL) else { return false }
+        defer { try? outFH.close() }
+        do {
+            try fh.seek(toOffset: offset)
+            var rem = length
+            while rem > 0 {
+                let n = Int(min(rem, 262144))
+                guard let chunk = try fh.read(upToCount: n), !chunk.isEmpty else { return false }
+                outFH.write(chunk)
+                rem -= UInt64(chunk.count)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func entriesJson(token: String) -> String {
+        stateLock.lock()
+        let tbl = readers[token]?.tableJson ?? ""
+        stateLock.unlock()
+        return tbl
+    }
+
+    private func readIndexChunk(token: String, maxBytes: Int) -> (ok: Bool, chunk: String, progress: Double) {
+        stateLock.lock()
+        guard let st = readers[token], !st.closed else {
+            stateLock.unlock()
+            return (false, "", -1)
+        }
+        let clampMax = max(65536, min(maxBytes, 2 * 1024 * 1024))
+        var raw = (try? st.plainFH.read(upToCount: clampMax)) ?? Data()
+        if raw.isEmpty {
+            stateLock.unlock()
+            return (true, "", 1.0)
+        }
+        // Never split a multi-byte UTF-8 sequence across chunk boundaries
+        var trim = 0
+        let count = raw.count
+        if count > 0 && st.plainPos + UInt64(count) < st.plainSize {
+            var i = count - 1
+            var cont = 0
+            while i >= max(0, count - 4) && (raw[i] & 0xC0) == 0x80 {
+                cont += 1
+                i -= 1
+            }
+            if i >= max(0, count - 4) {
+                let lead = raw[i]
+                let expected: Int
+                if (lead & 0x80) == 0 { expected = 1 }
+                else if (lead & 0xE0) == 0xC0 { expected = 2 }
+                else if (lead & 0xF0) == 0xE0 { expected = 3 }
+                else if (lead & 0xF8) == 0xF0 { expected = 4 }
+                else { expected = 1 }
+                let have = cont + 1
+                if have < expected {
+                    trim = have
+                }
+            }
+        }
+        if trim > 0 && trim < raw.count {
+            raw = raw.prefix(raw.count - trim)
+            try? st.plainFH.seek(toOffset: st.plainPos + UInt64(raw.count))
+        }
+        st.plainPos += UInt64(raw.count)
+        let prog = st.plainSize > 0 ? min(1.0, Double(st.plainPos) / Double(st.plainSize)) : 1.0
+        stateLock.unlock()
+        let text = String(decoding: raw, as: UTF8.self)
+        return (true, text, prog)
+    }
+
+    func closeRead(token: String) {
+        stateLock.lock()
+        let removed = readers.removeValue(forKey: token)
+        stateLock.unlock()
+        guard let st = removed else { return }
+        st.closed = true
+        try? st.plainFH.close()
+        try? FileManager.default.removeItem(at: st.plainIndexURL)
+        if let own = st.ownedCopyURL {
+            try? FileManager.default.removeItem(at: own)
+        }
+    }
+
+    // MARK: - Restore Phase A & C Helpers
+
+    private func beginAndStartRestore(token: String, entriesJson: String, copy: String) -> String {
+        stateLock.lock()
+        guard let reader = readers[token], reader.isFull, reader.indexLength > 0 else {
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "read"])
+        }
+        let sourceURL = reader.sourceURL
+        let name = reader.name
+        let fileSize = reader.fileSize
+        let indexOffset = reader.indexOffset
+        let indexLength = reader.indexLength
+        stateLock.unlock()
+
+        guard let listData = entriesJson.data(using: .utf8),
+              let list = try? JSONSerialization.jsonObject(with: listData) as? [[Any]] else {
+            return jsonString(["ok": false, "error": "invalid"])
+        }
+        var totalMedia: UInt64 = 0
+        var seen = Set<Int64>()
+        for row in list {
+            guard row.count >= 3,
+                  let num = (row[0] as? NSNumber)?.int64Value,
+                  let off = (row[1] as? NSNumber)?.uint64Value,
+                  let len = (row[2] as? NSNumber)?.uint64Value,
+                  num >= 0, seen.insert(num).inserted,
+                  off <= fileSize, len <= fileSize - off else {
+                return jsonString(["ok": false, "error": "invalid"])
+            }
+            totalMedia &+= len
+        }
+        let needed = totalMedia + UInt64(list.count) * 1024 + indexLength + Self.freeReserve
+        if UInt64(max(0, availableDiskBytes())) < needed {
+            return jsonString(["ok": false, "error": "space", "needed": needed])
+        }
+
+        stateLock.lock()
+        guard let created = createNewJobUnlocked(type: "restore", copyJson: copy, extra: [
+            "backupName": name,
+            "backupSize": fileSize,
+            "indexOffset": indexOffset,
+            "indexLength": indexLength,
+            "entries": list.count,
+            "mediaBytes": totalMedia,
+            "totalBytes": totalMedia + indexLength + UInt64(list.count) * 1024
+        ]) else {
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "busy"])
+        }
+
+        // Preserve a dedicated copy of the picked backup inside the job directory (instant APFS CoW <1ms)
+        let jobBackupURL = created.dir.appendingPathComponent("source.picshelf")
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: jobBackupURL)
+            try listData.write(to: created.dir.appendingPathComponent("restore.json"), options: .atomic)
+            if var job = readJob(in: created.dir) {
+                job["backupPath"] = jobBackupURL.path
+                job["state"] = "queued"
+                writeJob(job, in: created.dir)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: created.dir)
+            stateLock.unlock()
+            return jsonString(["ok": false, "error": "storage"])
+        }
+        stateLock.unlock()
+
+        scheduleWorker(jobId: created.id)
+        let st = statusJson()
+        return jsonString(["ok": true, "id": created.id, "status": st])
+    }
+
+    private func restoreResultJson(id: String) -> String {
+        guard let d = jobDir(for: id),
+              let data = try? Data(contentsOf: d.appendingPathComponent("result.json")),
+              let str = String(data: data, encoding: .utf8) else { return "{}" }
+        return str
+    }
+
+    private func reopenRestoreIndex(id: String) -> String {
+        guard let d = jobDir(for: id), let job = readJob(in: d),
+              (job["state"] as? String) == "done" else {
+            return jsonString(["ok": false, "error": "read"])
+        }
+        let idxGz = d.appendingPathComponent("index.json.gz")
+        guard FileManager.default.fileExists(atPath: idxGz.path) else {
+            return jsonString(["ok": false, "error": "read"])
+        }
+        let token = UUID().uuidString.lowercased()
+        let plainIndexURL = pickedDir.appendingPathComponent("\(token)_reopen.json")
+        guard PicShelfMediaStore.shared.decompressGzipFile(from: idxGz, to: plainIndexURL) != nil,
+              let plainFH = try? FileHandle(forReadingFrom: plainIndexURL),
+              let pAttrs = try? FileManager.default.attributesOfItem(atPath: plainIndexURL.path),
+              let pSize = (pAttrs[.size] as? NSNumber)?.uint64Value else {
+            try? FileManager.default.removeItem(at: plainIndexURL)
+            return jsonString(["ok": false, "error": "read"])
+        }
+        let name = job["backupName"] as? String ?? "PicShelf backup"
+        let st = ReaderState(
+            token: token, sourceURL: idxGz, ownedCopyURL: nil,
+            name: name, fileSize: pSize, isFull: true, tableJson: "",
+            indexOffset: 0, indexLength: pSize,
+            plainIndexURL: plainIndexURL, plainFH: plainFH, plainSize: pSize
+        )
+        stateLock.lock()
+        readers[token] = st
+        stateLock.unlock()
+        return jsonString(["ok": true, "token": token, "name": name, "size": pSize, "full": true, "local": true])
+    }
+
+    // MARK: - Background Worker (Phase B: Export & Restore with Checkpoints & iOS Background Task)
+
+    private func scheduleWorker(jobId: String) {
+        stateLock.lock()
+        guard activeWorkerJobId == nil else {
+            stateLock.unlock()
+            return
+        }
+        activeWorkerJobId = jobId
+        pausedByOS = false
+        stateLock.unlock()
+
+        workerQueue.async { [weak self] in
+            self?.runWorker(jobId: jobId)
+        }
+    }
+
+    private func isStopped(jobId: String) -> Bool {
+        stateLock.lock()
+        let stopped = pausedByOS || cancelRequestedJobIds.contains(jobId)
+        stateLock.unlock()
+        return stopped
+    }
+
+    private func isCancelled(jobId: String) -> Bool {
+        stateLock.lock()
+        let cancelled = cancelRequestedJobIds.contains(jobId)
+        stateLock.unlock()
+        return cancelled
+    }
+
+    private func cleanupCancelled(id: String) {
+        stateLock.lock()
+        cancelRequestedJobIds.remove(id)
+        if let d = jobDir(for: id), var job = readJob(in: d) {
+            if let partial = job["partial"] as? String, !partial.isEmpty {
+                try? FileManager.default.removeItem(atPath: partial)
+            }
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("export.part"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("staged"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("plan.jsonl"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("index.json.gz"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("checkpoint.json"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("held.tar"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("restore.json"))
+            try? FileManager.default.removeItem(at: d.appendingPathComponent("source.picshelf"))
+            job["state"] = "cancelled"
+            writeJob(job, in: d)
+        }
+        stateLock.unlock()
+        pushStatusToWebView()
+    }
+
+    private func runWorker(jobId: String) {
+        var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "PicShelfBackup") { [weak self] in
+                guard let self = self else { return }
+                self.stateLock.lock()
+                self.pausedByOS = true
+                self.stateLock.unlock()
+                if bgTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskId)
+                    bgTaskId = .invalid
+                }
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 2)
+
+        defer {
+            stateLock.lock()
+            if activeWorkerJobId == jobId { activeWorkerJobId = nil }
+            if liveJobId == jobId { liveJobId = nil }
+            stateLock.unlock()
+            DispatchQueue.main.async {
+                if bgTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskId)
+                    bgTaskId = .invalid
+                }
+            }
+            pushStatusToWebView()
+        }
+
+        guard let dir = jobDir(for: jobId), let job = readJob(in: dir) else { return }
+        let st = job["state"] as? String ?? ""
+        if st == "done" { return }
+        if st == "cancelling" || isCancelled(jobId: jobId) {
+            cleanupCancelled(id: jobId)
+            return
+        }
+        guard Self.activeStates.contains(st) else { return }
+
+        let type = job["type"] as? String ?? ""
+        let totalBytes = (job["totalBytes"] as? NSNumber)?.uint64Value ?? 0
+        let initialDone = (job["doneBytes"] as? NSNumber)?.uint64Value ?? 0
+
+        updateJob(id: jobId) { j in j["state"] = "running" }
+        stateLock.lock()
+        liveJobId = jobId
+        liveDone = initialDone
+        liveTotal = totalBytes
+        stateLock.unlock()
+        pushStatusToWebView()
+
+        let outcome: String
+        if type == "export" {
+            outcome = executeExport(dir: dir, jobId: jobId, job: job)
+        } else if type == "restore" {
+            outcome = executeRestore(dir: dir, jobId: jobId, job: job)
+        } else {
+            outcome = "failed:invalid"
+        }
+
+        if outcome == "done" {
+            if let finalJob = readJob(in: dir) {
+                postLocalNotification(job: finalJob, failedReason: nil)
+            }
+        } else if outcome == "paused" {
+            updateJob(id: jobId) { j in
+                j["state"] = "queued"
+                j["doneBytes"] = self.liveDone
+            }
+        } else if outcome == "cancelled" {
+            cleanupCancelled(id: jobId)
+        } else {
+            let reason = outcome.hasPrefix("failed:") ? String(outcome.dropFirst(7)) : "storage"
+            updateJob(id: jobId) { j in
+                j["state"] = "failed"
+                j["error"] = reason
+            }
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent("export.part"))
+            if let finalJob = readJob(in: dir) {
+                postLocalNotification(job: finalJob, failedReason: reason)
+            }
+        }
+    }
+
+    private func writeZeros(to fh: FileHandle, count: UInt64) -> Bool {
+        if count == 0 { return true }
+        let block = Data(count: Int(min(count, 262144)))
+        var rem = count
+        while rem > 0 {
+            let n = Int(min(rem, UInt64(block.count)))
+            if n == block.count { fh.write(block) }
+            else { fh.write(block.prefix(n)) }
+            rem -= UInt64(n)
+        }
+        return true
+    }
+
+    private func copyRange(from inFH: FileHandle, start: UInt64, length: UInt64, to outFH: FileHandle, jobId: String, onBytes: (UInt64) -> Void) -> UInt64 {
+        guard length > 0 else { return 0 }
+        do {
+            try inFH.seek(toOffset: start)
+            var copied: UInt64 = 0
+            while copied < length {
+                if isStopped(jobId: jobId) { return copied }
+                let toRead = Int(min(length - copied, 1024 * 1024))
+                guard let chunk = try inFH.read(upToCount: toRead), !chunk.isEmpty else { break }
+                outFH.write(chunk)
+                let c = UInt64(chunk.count)
+                copied += c
+                onBytes(c)
+            }
+            return copied
+        } catch {
+            return 0
+        }
+    }
+
+    private func executeExport(dir jobDirURL: URL, jobId: String, job: [String: Any]) -> String {
+        let planURL = jobDirURL.appendingPathComponent("plan.jsonl")
+        guard let planText = try? String(contentsOf: planURL, encoding: .utf8) else { return "failed:storage" }
+        var entries: [[String: Any]] = []
+        for line in planText.split(separator: "\n") {
+            let s = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.isEmpty { continue }
+            if let d = s.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                entries.append(obj)
+            }
+        }
+
+        let readmeData = Data(Self.readmeText.utf8)
+        let startOffset = BackupTarHelper.span(for: UInt64(readmeData.count))
+        var offsets: [UInt64] = []
+        offsets.reserveCapacity(entries.count)
+        var cursor = startOffset
+        for e in entries {
+            let len = (e["length"] as? NSNumber)?.uint64Value ?? 0
+            offsets.append(cursor + BackupTarHelper.blockSize)
+            cursor += BackupTarHelper.span(for: len)
+        }
+        let mediaEnd = cursor
+
+        let exportPartURL = jobDirURL.appendingPathComponent("export.part")
+        if !FileManager.default.fileExists(atPath: exportPartURL.path) {
+            FileManager.default.createFile(atPath: exportPartURL.path, contents: nil)
+        }
+        guard let outFH = try? FileHandle(forUpdating: exportPartURL) else { return "failed:storage" }
+        defer { try? outFH.close() }
+
+        // Restore checkpoint if resuming
+        var nextIdx = 0
+        var resumeOffset: UInt64 = 0
+        var failedSet = Set<Int>()
+        let cpURL = jobDirURL.appendingPathComponent("checkpoint.json")
+        if let cpData = try? Data(contentsOf: cpURL),
+           let cp = try? JSONSerialization.jsonObject(with: cpData) as? [String: Any],
+           let cpNext = (cp["next"] as? NSNumber)?.intValue,
+           let cpOff = (cp["offset"] as? NSNumber)?.uint64Value,
+           cpNext >= 0, cpNext <= entries.count, cpOff >= startOffset, cpOff <= mediaEnd {
+            nextIdx = cpNext
+            resumeOffset = cpOff
+            if let fArr = cp["failed"] as? [NSNumber] {
+                failedSet = Set(fArr.map { $0.intValue })
+            }
+        }
+
+        do {
+            try outFH.truncate(atOffset: nextIdx == 0 ? 0 : resumeOffset)
+            try outFH.seek(toOffset: nextIdx == 0 ? 0 : resumeOffset)
+        } catch {
+            return "failed:storage"
+        }
+
+        let nowSec = UInt64(Date().timeIntervalSince1970)
+        if nextIdx == 0 {
+            outFH.write(BackupTarHelper.header(name: "PicShelf backup - read me.txt", size: UInt64(readmeData.count), mtimeSeconds: nowSec))
+            outFH.write(readmeData)
+            _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(readmeData.count))))
+        }
+
+        var lastProgressPush = CACurrentMediaTime()
+        var lastCheckpoint = CACurrentMediaTime()
+        stateLock.lock()
+        liveDone = nextIdx == 0 ? 0 : min(liveTotal, offsets[max(0, nextIdx - 1)])
+        stateLock.unlock()
+
+        let onBytes: (UInt64) -> Void = { [weak self] added in
+            guard let self = self else { return }
+            self.stateLock.lock()
+            self.liveDone += added
+            self.stateLock.unlock()
+            let now = CACurrentMediaTime()
+            if now - lastProgressPush >= 0.4 {
+                lastProgressPush = now
+                self.pushStatusToWebView()
+            }
+        }
+
+        // Keep up to 6 open source FileHandles to avoid reopening the same archive repeatedly
+        var openHandles: [String: FileHandle] = [:]
+        defer { for (_, fh) in openHandles { try? fh.close() } }
+        func sourceHandle(for sourceId: String) -> FileHandle? {
+            if let existing = openHandles[sourceId] { return existing }
+            if openHandles.count >= 6, let firstKey = openHandles.keys.first {
+                try? openHandles.removeValue(forKey: firstKey)?.close()
+            }
+            guard let u = PicShelfMediaStore.shared.sourceURL(for: sourceId),
+                  let fh = try? FileHandle(forReadingFrom: u) else { return nil }
+            openHandles[sourceId] = fh
+            return fh
+        }
+
+        while nextIdx < entries.count {
+            if isStopped(jobId: jobId) {
+                return isCancelled(jobId: jobId) ? "cancelled" : "paused"
+            }
+            let e = entries[nextIdx]
+            let entryName = e["name"] as? String ?? "media/entry.bin"
+            let length = (e["length"] as? NSNumber)?.uint64Value ?? 0
+            let t = e["t"] as? String ?? "a"
+
+            outFH.write(BackupTarHelper.header(name: entryName, size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
+            let dataStartPos = outFH.offsetInFile
+            var copied: UInt64 = 0
+
+            if t == "a" {
+                let srcId = e["source"] as? String ?? ""
+                let kind = e["kind"] as? String ?? "tar"
+                let offset = (e["offset"] as? NSNumber)?.uint64Value ?? 0
+                let size = (e["size"] as? NSNumber)?.uint64Value ?? length
+                let method = (e["method"] as? NSNumber)?.intValue ?? 0
+                if let inFH = sourceHandle(for: srcId) {
+                    if kind == "zip" && method == 8 {
+                        if let inflated = PicShelfMediaStore.shared.extractEntryToData(sourceId: srcId, kind: "zip", offset: offset, size: size, method: 8, maxBytes: 512 * 1024 * 1024) {
+                            let slice = inflated.prefix(Int(length))
+                            outFH.write(slice)
+                            copied = UInt64(slice.count)
+                            onBytes(copied)
+                        }
+                    } else {
+                        var realStart = offset
+                        var validStart = true
+                        if kind == "zip" {
+                            if let resolved = PicShelfMediaStore.shared.resolveZipDataOffset(fileHandle: inFH, localOffset: offset) {
+                                realStart = resolved
+                            } else {
+                                validStart = false
+                            }
+                        }
+                        if validStart {
+                            copied = copyRange(from: inFH, start: realStart, length: min(size, length), to: outFH, jobId: jobId, onBytes: onBytes)
+                        }
+                    }
+                }
+            } else if t == "f", let stageIdx = (e["stage"] as? NSNumber)?.intValue {
+                let stURL = jobDirURL.appendingPathComponent("staged/\(stageIdx)")
+                let method = (e["method"] as? NSNumber)?.intValue ?? 0
+                if method == 8 {
+                    if let compressed = try? Data(contentsOf: stURL),
+                       let inflated = PicShelfMediaStore.shared.inflateRawDeflate(compressed, expectedSize: Int(min(length, 256 * 1024 * 1024))) {
+                        let slice = inflated.prefix(Int(length))
+                        outFH.write(slice)
+                        copied = UInt64(slice.count)
+                        onBytes(copied)
+                    }
+                } else if let stFH = try? FileHandle(forReadingFrom: stURL) {
+                    copied = copyRange(from: stFH, start: 0, length: length, to: outFH, jobId: jobId, onBytes: onBytes)
+                    try? stFH.close()
+                }
+            }
+
+            if isStopped(jobId: jobId) {
+                return isCancelled(jobId: jobId) ? "cancelled" : "paused"
+            }
+
+            let writtenSoFar = outFH.offsetInFile - dataStartPos
+            if writtenSoFar < length {
+                failedSet.insert(nextIdx)
+                _ = writeZeros(to: outFH, count: length - writtenSoFar)
+            } else if copied < length {
+                failedSet.insert(nextIdx)
+            }
+            _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: length)))
+            nextIdx += 1
+
+            let now = CACurrentMediaTime()
+            if now - lastCheckpoint >= 2.0 || nextIdx == entries.count {
+                let pos = outFH.offsetInFile
+                let cpObj: [String: Any] = ["next": nextIdx, "offset": pos, "failed": Array(failedSet).sorted()]
+                if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
+                    try? cpD.write(to: cpURL, options: .atomic)
+                }
+                updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
+                lastCheckpoint = now
+            }
+        }
+
+        if isStopped(jobId: jobId) {
+            return isCancelled(jobId: jobId) ? "cancelled" : "paused"
+        }
+
+        // Write picshelf/index.json.gz
+        let indexURL = jobDirURL.appendingPathComponent("index.json.gz")
+        guard let indexAttrs = try? FileManager.default.attributesOfItem(atPath: indexURL.path),
+              let indexLen = (indexAttrs[.size] as? NSNumber)?.uint64Value,
+              let idxFH = try? FileHandle(forReadingFrom: indexURL) else { return "failed:storage" }
+        let indexOffset = outFH.offsetInFile + BackupTarHelper.blockSize
+        outFH.write(BackupTarHelper.header(name: "picshelf/index.json.gz", size: indexLen, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
+        _ = copyRange(from: idxFH, start: 0, length: indexLen, to: outFH, jobId: jobId) { _ in }
+        try? idxFH.close()
+        _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: indexLen)))
+
+        // Write picshelf/entries.json.gz
+        var tableEntries: [[UInt64]] = []
+        tableEntries.reserveCapacity(entries.count)
+        for i in 0..<entries.count {
+            let len = (entries[i]["length"] as? NSNumber)?.uint64Value ?? 0
+            tableEntries.append([offsets[i], len, failedSet.contains(i) ? 0 : 1])
+        }
+        let tableObj: [String: Any] = ["version": 1, "entries": tableEntries]
+        guard let tableRaw = try? JSONSerialization.data(withJSONObject: tableObj, options: []),
+              let tableGz = BackupGzipHelper.compress(tableRaw) else { return "failed:storage" }
+        let tableOffset = outFH.offsetInFile + BackupTarHelper.blockSize
+        outFH.write(BackupTarHelper.header(name: "picshelf/entries.json.gz", size: UInt64(tableGz.count), mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
+        outFH.write(tableGz)
+        _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(tableGz.count))))
+
+        // Write fixed 512-byte picshelf/locator.json + 1024-byte TAR EOF trailer
+        let locatorObj: [String: Any] = [
+            "format": "picshelf-backup",
+            "version": 1,
+            "index": [indexOffset, indexLen],
+            "table": [tableOffset, UInt64(tableGz.count)],
+            "entries": entries.count
+        ]
+        guard let locRaw = try? JSONSerialization.data(withJSONObject: locatorObj, options: []), locRaw.count <= 512 else { return "failed:storage" }
+        var locBlock = Data(repeating: 0x20, count: 512)
+        locBlock.replaceSubrange(0..<locRaw.count, with: locRaw)
+        outFH.write(BackupTarHelper.header(name: Self.locatorName, size: 512, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
+        outFH.write(locBlock)
+        _ = writeZeros(to: outFH, count: 1024)
+
+        let totalWritten = outFH.offsetInFile
+        try? outFH.synchronize()
+        try? outFH.close()
+
+        // Atomically publish to Files › On My iPhone › PicShelf/
+        let requestedName = job["name"] as? String ?? "PicShelf-backup.picshelf"
+        let dest = uniqueBackupURL(named: requestedName)
+        do {
+            if FileManager.default.fileExists(atPath: dest.url.path) {
+                try FileManager.default.removeItem(at: dest.url)
+            }
+            try FileManager.default.moveItem(at: exportPartURL, to: dest.url)
+        } catch {
+            return "failed:storage"
+        }
+
+        // Cleanup staging artifacts
+        try? FileManager.default.removeItem(at: jobDirURL.appendingPathComponent("staged"))
+        try? FileManager.default.removeItem(at: planURL)
+        try? FileManager.default.removeItem(at: indexURL)
+        try? FileManager.default.removeItem(at: cpURL)
+
+        stateLock.lock()
+        liveDone = totalWritten
+        liveTotal = totalWritten
+        stateLock.unlock()
+
+        updateJob(id: jobId) { j in
+            j["state"] = "done"
+            j["doneBytes"] = totalWritten
+            j["totalBytes"] = totalWritten
+            j["finishedAt"] = Int64(Date().timeIntervalSince1970 * 1000)
+            j["result"] = [
+                "name": dest.name,
+                "folder": "Files › On My iPhone › PicShelf",
+                "bytes": totalWritten,
+                "skipped": failedSet.count,
+                "uri": dest.url.absoluteString
+            ]
+        }
+        return "done"
+    }
+
+    private func executeRestore(dir jobDirURL: URL, jobId: String, job: [String: Any]) -> String {
+        guard let backupPath = job["backupPath"] as? String,
+              let srcFH = try? FileHandle(forReadingFrom: URL(fileURLWithPath: backupPath)),
+              let restoreData = try? Data(contentsOf: jobDirURL.appendingPathComponent("restore.json")),
+              let list = try? JSONSerialization.jsonObject(with: restoreData) as? [[Any]] else {
+            return "failed:source"
+        }
+        defer { try? srcFH.close() }
+
+        let indexOffset = (job["indexOffset"] as? NSNumber)?.uint64Value ?? 0
+        let indexLength = (job["indexLength"] as? NSNumber)?.uint64Value ?? 0
+        let indexDst = jobDirURL.appendingPathComponent("index.json.gz")
+        if !FileManager.default.fileExists(atPath: indexDst.path) {
+            guard copyRangeToFile(from: srcFH, offset: indexOffset, length: indexLength, to: indexDst) else {
+                return "failed:source"
+            }
+        }
+
+        let partialArchiveURL = jobDirURL.appendingPathComponent("restore.tar.part")
+        let heldURL = jobDirURL.appendingPathComponent("held.tar")
+        if !FileManager.default.fileExists(atPath: partialArchiveURL.path) {
+            FileManager.default.createFile(atPath: partialArchiveURL.path, contents: nil)
+        }
+        if !FileManager.default.fileExists(atPath: heldURL.path) {
+            FileManager.default.createFile(atPath: heldURL.path, contents: nil)
+        }
+        guard let archFH = try? FileHandle(forUpdating: partialArchiveURL),
+              let heldFH = try? FileHandle(forUpdating: heldURL) else { return "failed:storage" }
+        defer {
+            try? archFH.close()
+            try? heldFH.close()
+        }
+
+        var nextIdx = 0
+        var archPos: UInt64 = 0
+        var heldPos: UInt64 = 0
+        var outOffsets: [UInt64] = []
+        var failedSet = Set<Int>()
+        let cpURL = jobDirURL.appendingPathComponent("checkpoint.json")
+        if let cpData = try? Data(contentsOf: cpURL),
+           let cp = try? JSONSerialization.jsonObject(with: cpData) as? [String: Any],
+           let cpNext = (cp["next"] as? NSNumber)?.intValue,
+           let cpArch = (cp["offset"] as? NSNumber)?.uint64Value,
+           let cpHeld = (cp["held"] as? NSNumber)?.uint64Value,
+           let cpOffs = cp["offsets"] as? [NSNumber],
+           cpNext >= 0, cpNext <= list.count, cpOffs.count == cpNext {
+            nextIdx = cpNext
+            archPos = cpArch
+            heldPos = cpHeld
+            outOffsets = cpOffs.map { $0.uint64Value }
+            if let fArr = cp["failed"] as? [NSNumber] {
+                failedSet = Set(fArr.map { $0.intValue })
+            }
+        }
+
+        do {
+            try archFH.truncate(atOffset: nextIdx == 0 ? 0 : archPos)
+            try archFH.seek(toOffset: nextIdx == 0 ? 0 : archPos)
+            try heldFH.truncate(atOffset: nextIdx == 0 ? 0 : heldPos)
+            try heldFH.seek(toOffset: nextIdx == 0 ? 0 : heldPos)
+        } catch {
+            return "failed:storage"
+        }
+
+        var doneAcc: UInt64 = indexLength
+        for i in 0..<nextIdx {
+            doneAcc += (list[i][2] as? NSNumber)?.uint64Value ?? 0
+        }
+        stateLock.lock()
+        liveDone = doneAcc
+        stateLock.unlock()
+
+        var hasArchive = false
+        var hasHeld = false
+        for row in list {
+            let isHeld = ((row.count >= 5 ? (row[4] as? NSNumber)?.intValue : 0) ?? 0) == 1
+            if isHeld { hasHeld = true } else { hasArchive = true }
+        }
+
+        var lastProgressPush = CACurrentMediaTime()
+        var lastCheckpoint = CACurrentMediaTime()
+        let onBytes: (UInt64) -> Void = { [weak self] added in
+            guard let self = self else { return }
+            self.stateLock.lock()
+            self.liveDone += added
+            self.stateLock.unlock()
+            let now = CACurrentMediaTime()
+            if now - lastProgressPush >= 0.4 {
+                lastProgressPush = now
+                self.pushStatusToWebView()
+            }
+        }
+
+        while nextIdx < list.count {
+            if isStopped(jobId: jobId) {
+                return isCancelled(jobId: jobId) ? "cancelled" : "paused"
+            }
+            let row = list[nextIdx]
+            let entryNum = (row[0] as? NSNumber)?.int64Value ?? Int64(nextIdx)
+            let srcOff = (row[1] as? NSNumber)?.uint64Value ?? 0
+            let length = (row[2] as? NSNumber)?.uint64Value ?? 0
+            let isHeld = ((row.count >= 5 ? (row[4] as? NSNumber)?.intValue : 0) ?? 0) == 1
+
+            if UInt64(max(0, availableDiskBytes())) < length + Self.freeReserve {
+                return "failed:space"
+            }
+
+            let targetFH = isHeld ? heldFH : archFH
+            targetFH.write(BackupTarHelper.header(name: "m/\(entryNum).bin", size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
+            let dataOff = targetFH.offsetInFile
+            let copied = copyRange(from: srcFH, start: srcOff, length: length, to: targetFH, jobId: jobId, onBytes: onBytes)
+            if isStopped(jobId: jobId) {
+                return isCancelled(jobId: jobId) ? "cancelled" : "paused"
+            }
+            if copied < length {
+                failedSet.insert(nextIdx)
+                _ = writeZeros(to: targetFH, count: length - copied)
+            }
+            _ = writeZeros(to: targetFH, count: UInt64(BackupTarHelper.padding(for: length)))
+            outOffsets.append(dataOff)
+            nextIdx += 1
+
+            let now = CACurrentMediaTime()
+            if now - lastCheckpoint >= 2.0 || nextIdx == list.count {
+                let cpObj: [String: Any] = [
+                    "next": nextIdx,
+                    "offset": archFH.offsetInFile,
+                    "held": heldFH.offsetInFile,
+                    "offsets": outOffsets,
+                    "failed": Array(failedSet).sorted()
+                ]
+                if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
+                    try? cpD.write(to: cpURL, options: .atomic)
+                }
+                updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
+                lastCheckpoint = now
+            }
+        }
+
+        _ = writeZeros(to: archFH, count: 1024)
+        _ = writeZeros(to: heldFH, count: 1024)
+        try? archFH.synchronize()
+        try? heldFH.synchronize()
+        try? archFH.close()
+        try? heldFH.close()
+
+        var adoptedSourceId = ""
+        if hasArchive {
+            guard let adopted = PicShelfMediaStore.shared.adoptFile(from: partialArchiveURL, ext: "tar") else {
+                return "failed:storage"
+            }
+            adoptedSourceId = adopted.sourceId
+            // Register immediately in JS known sources set so validateArchiveSources sees it right away
+            if let sidData = try? JSONSerialization.data(withJSONObject: [adoptedSourceId], options: []),
+               let sidArr = String(data: sidData, encoding: .utf8) {
+                DispatchQueue.main.async { [weak self] in
+                    self?.webView?.evaluateJavaScript(
+                        "if (window.__iosKnownSourceIds) window.__iosKnownSourceIds.add((\(sidArr))[0]);",
+                        completionHandler: nil
+                    )
+                }
+            }
+        } else {
+            try? FileManager.default.removeItem(at: partialArchiveURL)
+        }
+
+        let heldToken = hasHeld ? "held_\(jobId).tar" : ""
+        if !hasHeld {
+            try? FileManager.default.removeItem(at: heldURL)
+        }
+
+        var resultEntries: [[Any]] = []
+        resultEntries.reserveCapacity(list.count)
+        for i in 0..<list.count {
+            let row = list[i]
+            let entryNum = (row[0] as? NSNumber)?.int64Value ?? Int64(i)
+            let length = (row[2] as? NSNumber)?.uint64Value ?? 0
+            let isHeld = ((row.count >= 5 ? (row[4] as? NSNumber)?.intValue : 0) ?? 0) == 1
+            let off: Int64 = i < outOffsets.count ? Int64(outOffsets[i]) : -1
+            let okFlag = (i < outOffsets.count && !failedSet.contains(i)) ? 1 : 0
+            resultEntries.append([entryNum, off, length, okFlag, isHeld ? 1 : 0])
+        }
+
+        let resObj: [String: Any] = [
+            "sourceId": adoptedSourceId,
+            "heldToken": heldToken,
+            "entries": resultEntries
+        ]
+        if let rData = try? JSONSerialization.data(withJSONObject: resObj, options: []) {
+            try? rData.write(to: jobDirURL.appendingPathComponent("result.json"), options: .atomic)
+        }
+        try? FileManager.default.removeItem(at: cpURL)
+        try? FileManager.default.removeItem(at: jobDirURL.appendingPathComponent("source.picshelf"))
+        try? FileManager.default.removeItem(at: jobDirURL.appendingPathComponent("restore.json"))
+
+        stateLock.lock()
+        liveDone = liveTotal
+        stateLock.unlock()
+
+        updateJob(id: jobId) { j in
+            j["state"] = "done"
+            j["doneBytes"] = self.liveTotal
+            j["finishedAt"] = Int64(Date().timeIntervalSince1970 * 1000)
+            j["result"] = ["sourceId": adoptedSourceId, "entries": list.count]
+        }
+        return "done"
+    }
+
+    // MARK: - Local Notifications for Background Completion
+
+    private func postLocalNotification(job: [String: Any], failedReason: String?) {
+        let copy = (job["copy"] as? [String: Any]) ?? [:]
+        let isRestore = (job["type"] as? String) == "restore"
+        func txt(_ key: String, _ fallback: String) -> String {
+            if let v = copy[key] as? String, !v.isEmpty { return String(v.prefix(300)) }
+            return fallback
+        }
+        let content = UNMutableNotificationContent()
+        content.sound = .default
+        if let reason = failedReason {
+            content.title = txt("failedTitle", "Backup did not finish")
+            content.body = (reason == "space")
+                ? txt("spaceText", "Not enough free space. Free up some space, then try again.")
+                : txt("failedText", "Open PicShelf to try again.")
+        } else if isRestore {
+            content.title = txt("restoreDoneTitle", "Photos and videos copied")
+            content.body = txt("restoreDoneText", "Open PicShelf to finish restoring your library.")
+        } else {
+            let res = (job["result"] as? [String: Any]) ?? [:]
+            let folder = (res["folder"] as? String) ?? "Files › On My iPhone › PicShelf"
+            let name = (res["name"] as? String) ?? ""
+            content.title = txt("exportDoneTitle", "Backup saved")
+            content.body = txt("exportDoneText", "Saved in {folder} as {name}.")
+                .replacingOccurrences(of: "{folder}", with: folder)
+                .replacingOccurrences(of: "{name}", with: name)
+        }
+        let req = UNNotificationRequest(identifier: "picshelf_backup_\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
 }
 
 // MARK: - Native Animated Startup Cover (Exact Parity with Android StartupCover / StartupMotionArtwork / StartupWordmark)
@@ -2414,10 +4436,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         try? AVAudioSession.sharedInstance().setActive(true)
         startupCoverView?.startAnimation()
         bridge.startSensors()
+        PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
         let origLit = PicShelfLocalMediaServer.shared.originalsOrigin.map { "\"\($0)\"" } ?? "null"
         let thumbLit = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
+        let backupLit = PicShelfLocalMediaServer.shared.backupOrigin.map { "\"\($0)\"" } ?? "null"
         webView?.evaluateJavaScript(
-            "window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(origLit); window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbLit); if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
+            "window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(origLit); window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbLit); window.__PICSHELF_IOS_BACKUP_ORIGIN = \(backupLit); if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
             completionHandler: nil
         )
     }
@@ -2447,6 +4471,11 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         let idsJsonLiteral = String(data: idsJsonData, encoding: .utf8) ?? "[]"
         let originalsOriginLiteral = PicShelfLocalMediaServer.shared.originalsOrigin.map { "\"\($0)\"" } ?? "null"
         let thumbsOriginLiteral = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
+        let backupOriginLiteral = PicShelfLocalMediaServer.shared.backupOrigin.map { "\"\($0)\"" } ?? "null"
+        let initialBackupStatusData = (try? JSONSerialization.data(withJSONObject: [PicShelfBackupManager.shared.statusJson()], options: [])) ?? Data("[\"{}\"]".utf8)
+        let initialBackupStatusArr = String(data: initialBackupStatusData, encoding: .utf8) ?? "[\"{}\"]"
+        let initialFreeBytesData = (try? JSONSerialization.data(withJSONObject: [PicShelfBackupManager.shared.freeBytesJson()], options: [])) ?? Data("[\"{}\"]".utf8)
+        let initialFreeBytesArr = String(data: initialFreeBytesData, encoding: .utf8) ?? "[\"{}\"]"
 
         // 3. Inject compatibility shim for AndroidApp & iOS native bridge
         let bridgeShimScript = """
@@ -2454,7 +4483,27 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
             window.isNativeIOS = true;
             window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(originalsOriginLiteral);
             window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbsOriginLiteral);
+            window.__PICSHELF_IOS_BACKUP_ORIGIN = \(backupOriginLiteral);
             window.__iosKnownSourceIds = new Set(\(idsJsonLiteral));
+            window.__iosBackupStatusJson = (\(initialBackupStatusArr))[0];
+            window.__iosBackupFreeBytesJson = (\(initialFreeBytesArr))[0];
+            window.__iosBackupPendingJson = '';
+            window.__iosBackupReadProgress = {};
+            window.__iosBackupNotificationsAllowed = false;
+
+            const backupBase = function() {
+                return window.__PICSHELF_IOS_BACKUP_ORIGIN || '';
+            };
+            const backupPost = function(path, body, isJson) {
+                return fetch(backupBase() + path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': isJson ? 'application/json' : 'text/plain' },
+                    body: body == null ? '' : body
+                }).then(function(r) { return r.text(); });
+            };
+            const backupGet = function(path) {
+                return fetch(backupBase() + path).then(function(r) { return r.text(); });
+            };
 
             const send = function(action, payload) {
                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.auraBridge) {
@@ -2536,6 +4585,119 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 retainArchiveSources: function(idsJson) {
                     send('retainArchiveSources', { ids: typeof idsJson === 'string' ? idsJson : JSON.stringify(idsJson || []) });
                 },
+                libraryBackupExportBegin: function(name, copy) {
+                    return backupPost('export-begin', JSON.stringify({ name: String(name || ''), copy: String(copy || '{}') }), true);
+                },
+                libraryBackupExportIndex: function(jobId, chunk) {
+                    return backupPost('export-index?id=' + encodeURIComponent(String(jobId || '')), String(chunk || ''), false)
+                        .then(function(t) { try { return !!JSON.parse(t).ok; } catch (_) { return false; } });
+                },
+                libraryBackupExportPlan: function(jobId, json) {
+                    return backupPost('export-plan?id=' + encodeURIComponent(String(jobId || '')), String(json || '[]'), true)
+                        .then(function(t) { try { return !!JSON.parse(t).ok; } catch (_) { return false; } });
+                },
+                libraryBackupExportStageBegin: function(jobId, stage, length) {
+                    return backupPost('export-stage-begin?id=' + encodeURIComponent(String(jobId || '')) + '&stage=' + Number(stage || 0) + '&length=' + Number(length || 0), '', false)
+                        .then(function(t) { try { return !!JSON.parse(t).ok; } catch (_) { return false; } });
+                },
+                libraryBackupExportStageAppend: function(jobId, base64) {
+                    return backupPost('export-stage-append?id=' + encodeURIComponent(String(jobId || '')), String(base64 || ''), false)
+                        .then(function(t) { try { return !!JSON.parse(t).ok; } catch (_) { return false; } });
+                },
+                libraryBackupExportStageEnd: function(jobId, complete) {
+                    return backupPost('export-stage-end?id=' + encodeURIComponent(String(jobId || '')) + '&complete=' + (complete === false ? '0' : '1'), '', false)
+                        .then(function(t) { try { return !!JSON.parse(t).ok; } catch (_) { return false; } });
+                },
+                libraryBackupExportStart: function(jobId) {
+                    return backupPost('export-start?id=' + encodeURIComponent(String(jobId || '')), '', false)
+                        .then(function(t) {
+                            try {
+                                var parsed = JSON.parse(t);
+                                if (parsed && typeof parsed.status === 'string') window.__iosBackupStatusJson = parsed.status;
+                            } catch (_) {}
+                            return t;
+                        });
+                },
+                libraryBackupExportAbort: function(jobId) {
+                    send('libraryBackupExportAbort', { id: String(jobId || '') });
+                },
+                libraryBackupStatus: function() {
+                    return window.__iosBackupStatusJson || '{}';
+                },
+                libraryBackupCancel: function(jobId) {
+                    send('libraryBackupCancel', { id: String(jobId || '') });
+                },
+                libraryBackupAcknowledge: function(jobId) {
+                    window.__iosBackupStatusJson = '{}';
+                    send('libraryBackupAcknowledge', { id: String(jobId || '') });
+                },
+                libraryBackupClearInterrupted: function() {
+                    send('libraryBackupClearInterrupted');
+                },
+                libraryBackupShareResult: function(jobId, title) {
+                    send('libraryBackupShareResult', { id: String(jobId || ''), title: String(title || 'Share Backup') });
+                },
+                libraryBackupPick: function() {
+                    send('libraryBackupPick');
+                },
+                libraryBackupTakePending: function() {
+                    var v = window.__iosBackupPendingJson || '';
+                    window.__iosBackupPendingJson = '';
+                    return v;
+                },
+                libraryBackupProgress: function(token) {
+                    var p = window.__iosBackupReadProgress && window.__iosBackupReadProgress[String(token || '')];
+                    return typeof p === 'number' ? p : 0;
+                },
+                libraryBackupRead: function(token, maxChars) {
+                    var key = String(token || '');
+                    return backupGet('read?token=' + encodeURIComponent(key) + '&max=' + Number(maxChars || 1048576))
+                        .then(function(t) {
+                            var parsed = JSON.parse(t);
+                            if (!parsed || !parsed.ok) throw new Error('Backup read failed');
+                            if (typeof parsed.progress === 'number') window.__iosBackupReadProgress[key] = parsed.progress;
+                            return parsed.chunk || '';
+                        });
+                },
+                libraryBackupEntries: function(token) {
+                    return backupGet('entries?token=' + encodeURIComponent(String(token || '')));
+                },
+                libraryBackupClose: function(token) {
+                    var key = String(token || '');
+                    if (window.__iosBackupReadProgress) delete window.__iosBackupReadProgress[key];
+                    send('libraryBackupClose', { token: key });
+                },
+                libraryBackupFreeBytes: function() {
+                    return window.__iosBackupFreeBytesJson || '{}';
+                },
+                libraryBackupRestoreStart: function(token, entriesJson, copy) {
+                    return backupPost('restore-start', JSON.stringify({
+                        token: String(token || ''),
+                        entries: String(entriesJson || '[]'),
+                        copy: String(copy || '{}')
+                    }), true).then(function(t) {
+                        try {
+                            var parsed = JSON.parse(t);
+                            if (parsed && typeof parsed.status === 'string') window.__iosBackupStatusJson = parsed.status;
+                        } catch (_) {}
+                        return t;
+                    });
+                },
+                libraryBackupRestoreResult: function(jobId) {
+                    return backupGet('restore-result?id=' + encodeURIComponent(String(jobId || '')));
+                },
+                libraryBackupReopen: function(jobId) {
+                    return backupGet('reopen?id=' + encodeURIComponent(String(jobId || '')));
+                },
+                libraryBackupReleaseSource: function(sourceId) {
+                    send('libraryBackupReleaseSource', { sourceId: String(sourceId || '') });
+                },
+                libraryBackupNotificationsAllowed: function() {
+                    return !!window.__iosBackupNotificationsAllowed;
+                },
+                libraryBackupRequestNotifications: function() {
+                    send('libraryBackupRequestNotifications');
+                },
                 authenticateBiometrics: function() { send('authenticateBiometrics', { mode: 'unlock' }); },
                 authenticateForPasscodeReset: function() { send('authenticateBiometrics', { mode: 'reset' }); },
                 getCurrentLocation: function(callbackId) { send('getCurrentLocation', { callbackId: callbackId }); },
@@ -2610,6 +4772,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
         webView = WKWebView(frame: .zero, configuration: config)
         bridge.webView = webView
+        PicShelfBackupManager.shared.webView = webView
+        PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
