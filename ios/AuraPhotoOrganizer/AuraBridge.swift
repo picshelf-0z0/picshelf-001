@@ -122,6 +122,23 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
                 }
             }
 
+        case "setStartupLanguage":
+            if let lang = body["language"] as? String {
+                DispatchQueue.main.async { [weak self] in
+                    (self?.viewController as? ViewController)?.updateStartupLanguage(lang)
+                }
+            }
+
+        case "onStartupReady":
+            DispatchQueue.main.async { [weak self] in
+                (self?.viewController as? ViewController)?.onWebStartupReady()
+            }
+
+        case "onStartupFailed":
+            DispatchQueue.main.async { [weak self] in
+                (self?.viewController as? ViewController)?.onWebStartupFailed()
+            }
+
         case "sharePhoto":
             if let dataUrl = body["dataUrl"] as? String {
                 let title = body["title"] as? String ?? "Photo"

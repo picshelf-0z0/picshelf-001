@@ -1568,6 +1568,698 @@ class BackdropSchemeHandler: NSObject, WKURLSchemeHandler {
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 }
 
+// MARK: - Native Animated Startup Cover (Exact Parity with Android StartupCover / StartupMotionArtwork / StartupWordmark)
+
+final class PicShelfStartupCoverView: UIView {
+
+    private static let languageDefaultsKey = "picshelf_startup_language"
+    private static let localizedWaitingMessages: [String: String] = [
+        "en": "Getting your library ready…",
+        "hi": "आपकी लाइब्रेरी तैयार की जा रही है…",
+        "bn": "আপনার লাইব্রেরি প্রস্তুত করা হচ্ছে…",
+        "te": "మీ లైబ్రరీని సిద్ధం చేస్తున్నాము…",
+        "ta": "உங்கள் நூலகம் தயாராகிறது…",
+        "mr": "तुमची लायब्ररी तयार होत आहे…",
+        "gu": "તમારી લાઇબ્રેરી તૈયાર થઈ રહી છે…",
+        "kn": "ನಿಮ್ಮ ಲೈಬ್ರರಿಯನ್ನು ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ…",
+        "ml": "നിങ്ങളുടെ ലൈബ്രറി തയ്യാറാക്കുന്നു…",
+        "pa": "ਤੁਹਾਡੀ ਲਾਇਬ੍ਰੇਰੀ ਤਿਆਰ ਕੀਤੀ ਜਾ ਰਹੀ ਹੈ…"
+    ]
+
+    static func saveLanguage(_ lang: String) {
+        let code = lang.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if localizedWaitingMessages[code] != nil {
+            UserDefaults.standard.set(code, forKey: languageDefaultsKey)
+        }
+    }
+
+    static func waitingMessage(for lang: String? = nil) -> String {
+        let code = (lang ?? UserDefaults.standard.string(forKey: languageDefaultsKey) ?? "en").lowercased()
+        return localizedWaitingMessages[code] ?? localizedWaitingMessages["en"]!
+    }
+
+    // Wordmark handwriting timing matches Android StartupWordmark.kt (320ms start, 2400ms duration -> 2720ms complete)
+    static let wordmarkCompleteMs: Double = 2720.0
+
+    private struct SampledStroke {
+        let points: [CGPoint]
+        let cumulativeLengths: [CGFloat]
+        let totalLength: CGFloat
+    }
+
+    private var displayLink: CADisplayLink?
+    private var startMediaTime: CFTimeInterval = 0
+    private var isAnimating: Bool = false
+    private(set) var wordmarkCompleted: Bool = false
+    var onWordmarkComplete: (() -> Void)?
+
+    private let captionLabel: UILabel = {
+        let lbl = UILabel()
+        lbl.textAlignment = .center
+        lbl.numberOfLines = 3
+        lbl.textColor = UIColor(red: 241/255, green: 232/255, blue: 239/255, alpha: 1)
+        lbl.alpha = 0
+        lbl.isHidden = true
+        return lbl
+    }()
+
+    // Pre-rasterized layers (identical to Android StartupMotionArtwork.kt)
+    private var cachedBackdropSize: CGSize = .zero
+    private var cachedBackdropImage: CGImage?
+    private lazy var baseLayerImage: CGImage? = renderBaseLayer()
+    private lazy var edgeLayerImage: CGImage? = renderEdgeLayer()
+    private lazy var glassLayerImage: CGImage? = renderGlassLayer()
+    private lazy var outerRingImage: CGImage? = renderOuterRing()
+    private lazy var middleRingImage: CGImage? = renderMiddleRing()
+    private lazy var innerRingImage: CGImage? = renderInnerRing()
+    private lazy var prismImage: CGImage? = renderPrismLayer()
+    private lazy var portalArtImage: CGImage? = UIImage(named: "StartupPortalArt")?.cgImage
+    private lazy var glassClipPath: CGPath = Self.motionFramePath(half: 128, radius: 54)
+    private lazy var sheenGradient: CGGradient? = Self.makeGradient(
+        colors: [0x00ffffff, 0x1affffff, 0x88ffffff, 0x1affffff, 0x00ffffff],
+        locations: [0.0, 0.36, 0.5, 0.64, 1.0]
+    )
+    private lazy var wordmarkStrokes: [SampledStroke] = Self.buildWordmarkStrokes()
+    private lazy var wordmarkTotalLength: CGFloat = wordmarkStrokes.reduce(0) { $0 + $1.totalLength }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor(red: 9/255, green: 3/255, blue: 12/255, alpha: 1)
+        isOpaque = true
+        isUserInteractionEnabled = true
+        accessibilityLabel = "PicShelf"
+        captionLabel.text = Self.waitingMessage()
+        addSubview(captionLabel)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        stopAnimation()
+    }
+
+    func updateLanguage(_ lang: String) {
+        Self.saveLanguage(lang)
+        captionLabel.text = Self.waitingMessage(for: lang)
+        setNeedsLayout()
+    }
+
+    func elapsedMilliseconds() -> Double {
+        guard startMediaTime > 0 else { return 0 }
+        return max(0, (CACurrentMediaTime() - startMediaTime) * 1000.0)
+    }
+
+    func startAnimation() {
+        guard !isAnimating else { return }
+        isAnimating = true
+        if startMediaTime == 0 {
+            startMediaTime = CACurrentMediaTime()
+        }
+        let link = CADisplayLink(target: self, selector: #selector(onDisplayFrame))
+        if #available(iOS 15.0, *) {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+        }
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        setNeedsDisplay()
+    }
+
+    func stopAnimation() {
+        isAnimating = false
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+
+    @objc private func onDisplayFrame() {
+        let elapsed = elapsedMilliseconds()
+        if !wordmarkCompleted && elapsed >= Self.wordmarkCompleteMs {
+            wordmarkCompleted = true
+            onWordmarkComplete?()
+        }
+        // Show localized "Getting your library ready…" if loading continues past wordmark completion
+        if wordmarkCompleted && captionLabel.isHidden && elapsed >= 3100.0 {
+            captionLabel.isHidden = false
+            UIView.animate(withDuration: 0.25) {
+                self.captionLabel.alpha = 1
+            }
+        }
+        setNeedsDisplay()
+    }
+
+    private func layoutMetrics() -> (unit: CGFloat, originY: CGFloat, captionTop: CGFloat, captionHeight: CGFloat) {
+        let w = bounds.width
+        let h = bounds.height
+        let designScale = max(1.0, min(w / 390.0, h / 610.0))
+        let targetFontSize = 15.0 * designScale
+        if abs(captionLabel.font.pointSize - targetFontSize) > 0.2 {
+            captionLabel.font = UIFont.systemFont(ofSize: targetFontSize, weight: .regular)
+        }
+        let sideMargin: CGFloat = 24.0
+        let maxCaptionW = max(1.0, w - sideMargin * 2.0)
+        let capSize = captionLabel.sizeThatFits(CGSize(width: maxCaptionW, height: .greatestFiniteMagnitude))
+        let captionHeight = ceil(capSize.height)
+        let unit = min(w / 390.0, max(1.0, h - captionHeight - 32.0) / 462.0)
+        let originY = (h - (462.0 * unit + captionHeight)) / 2.0 + 202.0 * unit
+        let captionTop = originY + 260.0 * unit
+        return (unit, originY, captionTop, captionHeight)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let m = layoutMetrics()
+        captionLabel.frame = CGRect(x: 24, y: m.captionTop, width: max(1, bounds.width - 48), height: m.captionHeight)
+        if cachedBackdropSize != bounds.size && bounds.width > 0 && bounds.height > 0 {
+            cachedBackdropSize = bounds.size
+            cachedBackdropImage = renderBackdrop(size: bounds.size)
+        }
+        setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext(), bounds.width > 0, bounds.height > 0 else { return }
+
+        if cachedBackdropImage == nil || cachedBackdropSize != bounds.size {
+            cachedBackdropSize = bounds.size
+            cachedBackdropImage = renderBackdrop(size: bounds.size)
+        }
+
+        // 1. Cached full-screen ambient backdrop (exact Android dark plum + rose/champagne/cyan glows)
+        if let bg = cachedBackdropImage {
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: bounds.height)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(bg, in: bounds)
+            ctx.restoreGState()
+        }
+
+        let m = layoutMetrics()
+        guard m.unit > 0 else { return }
+        let elapsed = elapsedMilliseconds()
+
+        ctx.saveGState()
+        ctx.translateBy(x: bounds.width / 2.0, y: m.originY)
+        ctx.scaleBy(x: m.unit, y: m.unit)
+
+        // 2. Rose halo + outer glass square
+        drawImage(baseLayerImage, half: 202, in: ctx)
+
+        // 3. Rotating sweeping edge frame (period 5,000 ms)
+        let edgeAngleRad = CGFloat(elapsed.truncatingRemainder(dividingBy: 5000.0) / 5000.0) * (.pi * 2.0)
+        drawRotatedImage(edgeLayerImage, half: 138, radians: edgeAngleRad, in: ctx)
+
+        // 4. Smoky glass square + rose-gold rim
+        drawImage(glassLayerImage, half: 130, in: ctx)
+
+        // 5. Diagonal sheen sweep (starts at 800ms, repeats every 3600ms, active 1450ms)
+        drawSheen(elapsedMs: elapsed, in: ctx)
+
+        // 6. Central camera-lens portal artwork
+        drawImage(portalArtImage, half: 108, in: ctx)
+
+        // 7. Three counter-rotating precision orbit rings
+        let outerRad = CGFloat(elapsed.truncatingRemainder(dividingBy: 12000.0) / 12000.0) * (.pi * 2.0)
+        let middleRad = -CGFloat(elapsed.truncatingRemainder(dividingBy: 8000.0) / 8000.0) * (.pi * 2.0)
+        drawRotatedImage(outerRingImage, half: 91, radians: outerRad, in: ctx)
+        drawRotatedImage(middleRingImage, half: 79, radians: middleRad, in: ctx)
+        drawRotatedImage(innerRingImage, half: 66, radians: edgeAngleRad, in: ctx)
+
+        // 8. Breathing & gently rotating faceted prism (period 4,500 ms)
+        let breathePhase = (elapsed.truncatingRemainder(dividingBy: 4500.0) / 4500.0) * (.pi * 2.0)
+        let breathe = CGFloat((1.0 - cos(breathePhase)) * 0.5)
+        ctx.saveGState()
+        let prismScale = 0.97 + 0.06 * breathe
+        ctx.scaleBy(x: prismScale, y: prismScale)
+        ctx.rotate(by: (6.0 * breathe) * (.pi / 180.0))
+        drawImage(prismImage, half: 38, in: ctx)
+        ctx.restore()
+
+        // 9. Handwritten "PicShelf" connected script wordmark (320ms -> 2720ms)
+        let progress = wordmarkCompleted ? 1.0 : CGFloat(max(0.0, min(1.0, (elapsed - 320.0) / 2400.0)))
+        drawWordmark(progress: progress, in: ctx)
+
+        ctx.restore()
+    }
+
+    private func drawImage(_ img: CGImage?, half: CGFloat, in ctx: CGContext) {
+        guard let img = img else { return }
+        ctx.saveGState()
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(img, in: CGRect(x: -half, y: -half, width: half * 2, height: half * 2))
+        ctx.restore()
+    }
+
+    private func drawRotatedImage(_ img: CGImage?, half: CGFloat, radians: CGFloat, in ctx: CGContext) {
+        guard let img = img else { return }
+        ctx.saveGState()
+        ctx.rotate(by: radians)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(img, in: CGRect(x: -half, y: -half, width: half * 2, height: half * 2))
+        ctx.restore()
+    }
+
+    private func drawSheen(elapsedMs: Double, in ctx: CGContext) {
+        guard elapsedMs >= 800.0, let grad = sheenGradient else { return }
+        let sweep = (elapsedMs - 800.0).truncatingRemainder(dividingBy: 3600.0)
+        guard sweep < 1450.0 else { return }
+        ctx.saveGState()
+        ctx.addPath(glassClipPath)
+        ctx.clip()
+        ctx.rotate(by: 35.0 * (.pi / 180.0))
+        ctx.translateBy(x: -205.0 + 410.0 * CGFloat(sweep / 1450.0), y: 0)
+        ctx.clip(to: CGRect(x: -23, y: -190, width: 46, height: 380))
+        ctx.drawLinearGradient(grad, start: CGPoint(x: -23, y: 0), end: CGPoint(x: 23, y: 0), options: [])
+        ctx.restore()
+    }
+
+    private func drawWordmark(progress: CGFloat, in ctx: CGContext) {
+        guard progress > 0 else { return }
+        ctx.saveGState()
+        ctx.translateBy(x: -124, y: 154)
+        ctx.setStrokeColor(UIColor.white.cgColor)
+        ctx.setLineWidth(3.6)
+        ctx.setLineCap(.round)
+        ctx.setLineJoin(.round)
+
+        var remaining = wordmarkTotalLength * progress
+        for stroke in wordmarkStrokes {
+            guard stroke.points.count >= 2 else { continue }
+            if remaining >= stroke.totalLength {
+                ctx.beginPath()
+                ctx.move(to: stroke.points[0])
+                for i in 1..<stroke.points.count {
+                    ctx.addLine(to: stroke.points[i])
+                }
+                ctx.strokePath()
+                remaining -= stroke.totalLength
+            } else {
+                if remaining > 0 {
+                    ctx.beginPath()
+                    ctx.move(to: stroke.points[0])
+                    for i in 1..<stroke.points.count {
+                        let segEnd = stroke.cumulativeLengths[i]
+                        if segEnd <= remaining {
+                            ctx.addLine(to: stroke.points[i])
+                        } else {
+                            let segStart = stroke.cumulativeLengths[i - 1]
+                            let segLen = max(0.0001, segEnd - segStart)
+                            let t = (remaining - segStart) / segLen
+                            let p0 = stroke.points[i - 1]
+                            let p1 = stroke.points[i]
+                            let interp = CGPoint(x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t)
+                            ctx.addLine(to: interp)
+                            break
+                        }
+                    }
+                    ctx.strokePath()
+                }
+                break
+            }
+        }
+        ctx.restore()
+    }
+
+    // MARK: - Layer Pre-Rasterization Helpers
+
+    private static func argbColor(_ argb: UInt32) -> UIColor {
+        let a = CGFloat((argb >> 24) & 0xff) / 255.0
+        let r = CGFloat((argb >> 16) & 0xff) / 255.0
+        let g = CGFloat((argb >> 8) & 0xff) / 255.0
+        let b = CGFloat(argb & 0xff) / 255.0
+        return UIColor(red: r, green: g, blue: b, alpha: a)
+    }
+
+    private static func makeGradient(colors: [UInt32], locations: [CGFloat]?) -> CGGradient? {
+        let cgColors = colors.map { argbColor($0).cgColor } as CFArray
+        let cs = CGColorSpaceCreateDeviceRGB()
+        if let locs = locations {
+            return CGGradient(colorsSpace: cs, colors: cgColors, locations: locs)
+        }
+        return CGGradient(colorsSpace: cs, colors: cgColors, locations: nil)
+    }
+
+    private static func motionFramePath(half: CGFloat, radius: CGFloat) -> CGPath {
+        let t = half - radius
+        let p = CGMutablePath()
+        p.move(to: CGPoint(x: -t, y: -half))
+        p.addLine(to: CGPoint(x: t, y: -half))
+        p.addQuadCurve(to: CGPoint(x: half, y: -t), control: CGPoint(x: half, y: -half))
+        p.addLine(to: CGPoint(x: half, y: t))
+        p.addQuadCurve(to: CGPoint(x: t, y: half), control: CGPoint(x: half, y: half))
+        p.addLine(to: CGPoint(x: -t, y: half))
+        p.addQuadCurve(to: CGPoint(x: -half, y: t), control: CGPoint(x: -half, y: half))
+        p.addLine(to: CGPoint(x: -half, y: -t))
+        p.addQuadCurve(to: CGPoint(x: -t, y: -half), control: CGPoint(x: -half, y: -half))
+        p.closeSubpath()
+        return p
+    }
+
+    private func rasterLayer(half: CGFloat, draw: (CGContext) -> Void) -> CGImage? {
+        let pixels = min(Int(half * 4.0), 540)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: pixels, height: pixels), format: format)
+        let img = renderer.image { rc in
+            let ctx = rc.cgContext
+            ctx.translateBy(x: CGFloat(pixels) / 2.0, y: CGFloat(pixels) / 2.0)
+            let s = CGFloat(pixels) / (half * 2.0)
+            ctx.scaleBy(x: s, y: s)
+            draw(ctx)
+        }
+        return img.cgImage
+    }
+
+    private func renderBackdrop(size: CGSize) -> CGImage? {
+        let w = size.width
+        let h = size.height
+        let unit = min(w / 390.0, h / 610.0)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = min(UIScreen.main.scale, 2.0)
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { rc in
+            let ctx = rc.cgContext
+            if let baseGrad = Self.makeGradient(colors: [0xff1a0a20, 0xff09030c, 0xff020104], locations: [0.0, 0.7, 1.0]) {
+                let c = CGPoint(x: w * 0.5, y: h * 0.48)
+                let r = hypot(w * 0.5, h * 0.52)
+                ctx.drawRadialGradient(baseGrad, startCenter: c, startRadius: 0, endCenter: c, endRadius: r, options: [.drawsAfterEndLocation])
+            }
+            let glows: [(CGPoint, CGFloat, UInt32)] = [
+                (CGPoint(x: w * 0.08 + 132 * unit, y: h * 0.15 + 132 * unit), 175 * unit, 0x35f43f5e),
+                (CGPoint(x: w * 0.95 - 138 * unit, y: h * 0.82 - 138 * unit), 193 * unit, 0x32e5a985),
+                (CGPoint(x: w * 0.15 + 120 * unit, y: h * 0.70 - 120 * unit), 146 * unit, 0x2006b6d4)
+            ]
+            for (center, radius, color) in glows {
+                if let g = Self.makeGradient(colors: [color, color & 0x00ffffff], locations: [0.0, 1.0]) {
+                    ctx.drawRadialGradient(g, startCenter: center, startRadius: 0, endCenter: center, endRadius: radius, options: [])
+                }
+            }
+        }.cgImage
+    }
+
+    private func renderBaseLayer() -> CGImage? {
+        return rasterLayer(half: 202) { ctx in
+            if let haloGrad = Self.makeGradient(colors: [0x00f43f5e, 0x40f43f5e, 0x00f43f5e], locations: [0.0, 0.60, 1.0]) {
+                ctx.drawRadialGradient(haloGrad, startCenter: .zero, startRadius: 0, endCenter: .zero, endRadius: 202, options: [])
+            }
+            let outerRect = CGRect(x: -132.5, y: -132.5, width: 265, height: 265)
+            let outerPath = UIBezierPath(roundedRect: outerRect, cornerRadius: 58).cgPath
+            ctx.saveGState()
+            ctx.addPath(outerPath)
+            ctx.clip()
+            if let grad = Self.makeGradient(colors: [0xffb89d99, 0xff70575a, 0xff775755, 0xff976952], locations: nil) {
+                ctx.drawLinearGradient(grad, start: CGPoint(x: -132, y: -132), end: CGPoint(x: 132, y: 132), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restore()
+        }
+    }
+
+    private func renderEdgeLayer() -> CGImage? {
+        let half: CGFloat = 138
+        let pixels = min(Int(half * 4.0), 540)
+        let s = CGFloat(pixels) / (half * 2.0)
+
+        let gradLayer = CAGradientLayer()
+        gradLayer.type = .conic
+        gradLayer.frame = CGRect(x: 0, y: 0, width: pixels, height: pixels)
+        gradLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        gradLayer.endPoint = CGPoint(x: 1.0, y: 0.5)
+        gradLayer.colors = [
+            0xd9f43f5e, 0xffffffff, 0xbf06b6d4, 0x99e5a985,
+            0x4df43f5e, 0x00f43f5e, 0x00f43f5e, 0x80fbe0d4, 0xd9f43f5e
+        ].map { Self.argbColor($0).cgColor }
+        gradLayer.locations = [0.0, 0.139, 0.25, 0.417, 0.556, 0.694, 0.75, 0.861, 1.0].map { NSNumber(value: $0) }
+
+        var transform = CGAffineTransform(translationX: CGFloat(pixels) / 2.0, y: CGFloat(pixels) / 2.0).scaledBy(x: s, y: s)
+        let scaledPath = Self.motionFramePath(half: 135, radius: 60).copy(using: &transform)
+
+        let maskLayer = CAShapeLayer()
+        maskLayer.frame = gradLayer.bounds
+        maskLayer.path = scaledPath
+        maskLayer.fillColor = UIColor.clear.cgColor
+        maskLayer.strokeColor = UIColor.white.cgColor
+        maskLayer.lineWidth = 3.0 * s
+        gradLayer.mask = maskLayer
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: pixels, height: pixels), format: format)
+        return renderer.image { rc in
+            gradLayer.render(in: rc.cgContext)
+        }.cgImage
+    }
+
+    private func renderGlassLayer() -> CGImage? {
+        return rasterLayer(half: 130) { ctx in
+            let rect = CGRect(x: -128.5, y: -128.5, width: 257, height: 257)
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: 54).cgPath
+            ctx.saveGState()
+            ctx.addPath(path)
+            ctx.clip()
+            if let grad = Self.makeGradient(colors: [0xff4b2c3f, 0xff291421, 0xff170c18, 0xff351622], locations: [0.0, 0.13, 0.78, 1.0]) {
+                ctx.drawLinearGradient(grad, start: CGPoint(x: -80, y: -129), end: CGPoint(x: 80, y: 129), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            ctx.restore()
+
+            let strokeRect = CGRect(x: -127.8, y: -127.8, width: 255.6, height: 255.6)
+            ctx.addPath(UIBezierPath(roundedRect: strokeRect, cornerRadius: 54).cgPath)
+            ctx.setStrokeColor(Self.argbColor(0x86fbe0d4).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.strokePath()
+        }
+    }
+
+    private func renderOuterRing() -> CGImage? {
+        return rasterLayer(half: 91) { ctx in
+            ctx.setStrokeColor(Self.argbColor(0x73fbe0d4).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.setLineDash(phase: 0, lengths: [4.5, 3.0])
+            ctx.addArc(center: .zero, radius: 89, startAngle: 0, endAngle: .pi * 2.0, clockwise: false)
+            ctx.strokePath()
+        }
+    }
+
+    private func renderMiddleRing() -> CGImage? {
+        return rasterLayer(half: 79) { ctx in
+            ctx.setStrokeColor(Self.argbColor(0x8cf43f5e).cgColor)
+            ctx.setLineWidth(1.0)
+            ctx.setLineDash(phase: 0, lengths: [1.0, 2.4])
+            ctx.addArc(center: .zero, radius: 77, startAngle: 0, endAngle: .pi * 2.0, clockwise: false)
+            ctx.strokePath()
+        }
+    }
+
+    private func renderInnerRing() -> CGImage? {
+        return rasterLayer(half: 66) { ctx in
+            ctx.setLineWidth(1.5)
+            ctx.setStrokeColor(Self.argbColor(0x33ffffff).cgColor)
+            ctx.addArc(center: .zero, radius: 64, startAngle: 0, endAngle: .pi * 2.0, clockwise: false)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(Self.argbColor(0xfffbe0d4).cgColor)
+            ctx.addArc(center: .zero, radius: 64, startAngle: 225.0 * .pi / 180.0, endAngle: 315.0 * .pi / 180.0, clockwise: false)
+            ctx.strokePath()
+
+            ctx.setStrokeColor(Self.argbColor(0xff06b6d4).cgColor)
+            ctx.addArc(center: .zero, radius: 64, startAngle: 45.0 * .pi / 180.0, endAngle: 135.0 * .pi / 180.0, clockwise: false)
+            ctx.strokePath()
+        }
+    }
+
+    private func renderPrismLayer() -> CGImage? {
+        // Exact port of app/src/main/res/drawable/startup_prism.xml (200x200 viewport mapped to -80..+80)
+        return rasterLayer(half: 38) { ctx in
+            ctx.saveGState()
+            ctx.translateBy(x: -80, y: -80)
+            ctx.scaleBy(x: 160.0 / 200.0, y: 160.0 / 200.0)
+
+            // Center radial aura
+            if let rad = Self.makeGradient(colors: [0x59ffffff, 0x40fbe0d4, 0x26f43f5e, 0x00f43f5e], locations: [0.0, 0.4, 0.75, 1.0]) {
+                let c = CGPoint(x: 100, y: 100)
+                ctx.drawRadialGradient(rad, startCenter: c, startRadius: 0, endCenter: c, endRadius: 38, options: [])
+            }
+
+            func polygonPath(_ pts: [(CGFloat, CGFloat)]) -> CGPath {
+                let p = CGMutablePath()
+                if let first = pts.first {
+                    p.move(to: CGPoint(x: first.0, y: first.1))
+                    for pt in pts.dropFirst() {
+                        p.addLine(to: CGPoint(x: pt.0, y: pt.1))
+                    }
+                    p.closeSubpath()
+                }
+                return p
+            }
+
+            func drawSolidFacet(_ pts: [(CGFloat, CGFloat)], fill: UInt32, stroke: UInt32, alpha: CGFloat, lineWidth: CGFloat) {
+                let path = polygonPath(pts)
+                ctx.saveGState()
+                ctx.setAlpha(alpha)
+                ctx.addPath(path)
+                ctx.setFillColor(Self.argbColor(fill).cgColor)
+                ctx.fillPath()
+                ctx.addPath(path)
+                ctx.setStrokeColor(Self.argbColor(stroke).cgColor)
+                ctx.setLineWidth(lineWidth)
+                ctx.strokePath()
+                ctx.restore()
+            }
+
+            // Central octagon
+            let oct = polygonPath([(88,72),(112,72),(128,88),(128,112),(112,128),(88,128),(72,112),(72,88)])
+            ctx.saveGState()
+            ctx.setAlpha(0.85)
+            ctx.addPath(oct)
+            ctx.clip()
+            if let octGrad = Self.makeGradient(colors: [0x73fbe0d4, 0x66f43f5e, 0x6bc084fc, 0x7306b6d4], locations: [0.0, 0.35, 0.7, 1.0]) {
+                ctx.drawLinearGradient(octGrad, start: CGPoint(x: 72, y: 72), end: CGPoint(x: 128, y: 128), options: [])
+            }
+            ctx.restore()
+            ctx.saveGState()
+            ctx.setAlpha(0.85)
+            ctx.addPath(oct)
+            ctx.setStrokeColor(Self.argbColor(0x99ffffff).cgColor)
+            ctx.setLineWidth(0.8)
+            ctx.strokePath()
+            ctx.restore()
+
+            // Cardinal facets
+            drawSolidFacet([(100,56),(88,72),(112,72)], fill: 0x99ffffff, stroke: 0xb2fbe0d4, alpha: 0.8, lineWidth: 0.6)
+            drawSolidFacet([(100,144),(88,128),(112,128)], fill: 0xa6f43f5e, stroke: 0xb2fbe0d4, alpha: 0.8, lineWidth: 0.6)
+            drawSolidFacet([(56,100),(72,88),(72,112)], fill: 0xa606b6d4, stroke: 0xb2fbe0d4, alpha: 0.8, lineWidth: 0.6)
+            drawSolidFacet([(144,100),(128,88),(128,112)], fill: 0xa6fbe0d4, stroke: 0xb2fbe0d4, alpha: 0.8, lineWidth: 0.6)
+
+            // Top-left gradient facet
+            let tl = polygonPath([(68,68),(72,88),(88,72)])
+            ctx.saveGState()
+            ctx.setAlpha(0.75)
+            ctx.addPath(tl)
+            ctx.clip()
+            if let tlGrad = Self.makeGradient(colors: [0xb2ffffff, 0xa6c084fc, 0xb2f43f5e, 0x9938bdf8], locations: [0.0, 0.4, 0.75, 1.0]) {
+                ctx.drawLinearGradient(tlGrad, start: CGPoint(x: 88, y: 68), end: CGPoint(x: 68, y: 88), options: [])
+            }
+            ctx.restore()
+            ctx.saveGState()
+            ctx.setAlpha(0.75)
+            ctx.addPath(tl)
+            ctx.setStrokeColor(Self.argbColor(0xb2ffffff).cgColor)
+            ctx.setLineWidth(0.6)
+            ctx.strokePath()
+            ctx.restore()
+
+            // Other diagonal & outer facets
+            drawSolidFacet([(132,68),(112,72),(128,88)], fill: 0xa6ffffff, stroke: 0xb2ffffff, alpha: 0.75, lineWidth: 0.6)
+            drawSolidFacet([(68,132),(72,112),(88,128)], fill: 0x99f43f5e, stroke: 0xb2ffffff, alpha: 0.75, lineWidth: 0.6)
+            drawSolidFacet([(132,132),(128,112),(112,128)], fill: 0x9938bdf8, stroke: 0xb2ffffff, alpha: 0.75, lineWidth: 0.6)
+
+            drawSolidFacet([(100,56),(68,68),(88,72)], fill: 0x73ffffff, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
+            drawSolidFacet([(100,56),(132,68),(112,72)], fill: 0x8cfbe0d4, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
+            drawSolidFacet([(100,144),(68,132),(88,128)], fill: 0x80f43f5e, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
+            drawSolidFacet([(100,144),(132,132),(112,128)], fill: 0x8cc084fc, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
+
+            ctx.restore()
+        }
+    }
+
+    // Exact 10 cubic Bezier strokes from Android StartupWordmark.kt
+    private static func buildWordmarkStrokes() -> [SampledStroke] {
+        enum Seg {
+            case line(CGPoint)
+            case cubic(CGPoint, CGPoint, CGPoint)
+        }
+        func sampleStroke(start: CGPoint, segments: [Seg]) -> SampledStroke {
+            var pts: [CGPoint] = [start]
+            var cur = start
+            for seg in segments {
+                switch seg {
+                case .line(let to):
+                    pts.append(to)
+                    cur = to
+                case .cubic(let c1, let c2, let to):
+                    let steps = 28
+                    for i in 1...steps {
+                        let t = CGFloat(i) / CGFloat(steps)
+                        let mt = 1.0 - t
+                        let x = mt*mt*mt*cur.x + 3*mt*mt*t*c1.x + 3*mt*t*t*c2.x + t*t*t*to.x
+                        let y = mt*mt*mt*cur.y + 3*mt*mt*t*c1.y + 3*mt*t*t*c2.y + t*t*t*to.y
+                        pts.append(CGPoint(x: x, y: y))
+                    }
+                    cur = to
+                }
+            }
+            var cum: [CGFloat] = [0]
+            var total: CGFloat = 0
+            for i in 1..<pts.count {
+                total += hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+                cum.append(total)
+            }
+            return SampledStroke(points: pts, cumulativeLengths: cum, totalLength: total)
+        }
+
+        return [
+            // P
+            sampleStroke(start: CGPoint(x: 14, y: 70), segments: [
+                .cubic(CGPoint(x: 18, y: 50), CGPoint(x: 25, y: 13), CGPoint(x: 31, y: 10)),
+                .cubic(CGPoint(x: 41, y: 5), CGPoint(x: 62, y: 10), CGPoint(x: 59, y: 25)),
+                .cubic(CGPoint(x: 55, y: 42), CGPoint(x: 32, y: 42), CGPoint(x: 25, y: 32))
+            ]),
+            // i stem
+            sampleStroke(start: CGPoint(x: 60, y: 49), segments: [
+                .cubic(CGPoint(x: 56, y: 61), CGPoint(x: 54, y: 72), CGPoint(x: 62, y: 69)),
+                .cubic(CGPoint(x: 67, y: 66), CGPoint(x: 71, y: 61), CGPoint(x: 74, y: 55))
+            ]),
+            // i dot
+            sampleStroke(start: CGPoint(x: 64, y: 38), segments: [
+                .line(CGPoint(x: 64.2, y: 37.8))
+            ]),
+            // c
+            sampleStroke(start: CGPoint(x: 94, y: 50), segments: [
+                .cubic(CGPoint(x: 83, y: 38), CGPoint(x: 66, y: 59), CGPoint(x: 75, y: 68)),
+                .cubic(CGPoint(x: 82, y: 74), CGPoint(x: 93, y: 64), CGPoint(x: 99, y: 58))
+            ]),
+            // S
+            sampleStroke(start: CGPoint(x: 139, y: 20), segments: [
+                .cubic(CGPoint(x: 139, y: 7), CGPoint(x: 118, y: 5), CGPoint(x: 111, y: 15)),
+                .cubic(CGPoint(x: 96, y: 33), CGPoint(x: 134, y: 38), CGPoint(x: 133, y: 54)),
+                .cubic(CGPoint(x: 133, y: 77), CGPoint(x: 105, y: 77), CGPoint(x: 100, y: 66))
+            ]),
+            // h
+            sampleStroke(start: CGPoint(x: 141, y: 67), segments: [
+                .cubic(CGPoint(x: 146, y: 49), CGPoint(x: 164, y: 9), CGPoint(x: 157, y: 10)),
+                .cubic(CGPoint(x: 147, y: 13), CGPoint(x: 144, y: 47), CGPoint(x: 141, y: 67)),
+                .cubic(CGPoint(x: 151, y: 45), CGPoint(x: 162, y: 45), CGPoint(x: 159, y: 61)),
+                .cubic(CGPoint(x: 154, y: 76), CGPoint(x: 164, y: 69), CGPoint(x: 170, y: 63))
+            ]),
+            // e
+            sampleStroke(start: CGPoint(x: 169, y: 60), segments: [
+                .cubic(CGPoint(x: 183, y: 60), CGPoint(x: 188, y: 46), CGPoint(x: 177, y: 48)),
+                .cubic(CGPoint(x: 164, y: 50), CGPoint(x: 165, y: 70), CGPoint(x: 176, y: 70)),
+                .cubic(CGPoint(x: 183, y: 70), CGPoint(x: 191, y: 63), CGPoint(x: 195, y: 57))
+            ]),
+            // l
+            sampleStroke(start: CGPoint(x: 194, y: 60), segments: [
+                .cubic(CGPoint(x: 210, y: 43), CGPoint(x: 219, y: 11), CGPoint(x: 212, y: 10)),
+                .cubic(CGPoint(x: 203, y: 11), CGPoint(x: 188, y: 69), CGPoint(x: 198, y: 70)),
+                .cubic(CGPoint(x: 204, y: 71), CGPoint(x: 210, y: 63), CGPoint(x: 214, y: 59))
+            ]),
+            // f
+            sampleStroke(start: CGPoint(x: 213, y: 83), segments: [
+                .cubic(CGPoint(x: 215, y: 61), CGPoint(x: 231, y: 9), CGPoint(x: 240, y: 13)),
+                .cubic(CGPoint(x: 250, y: 20), CGPoint(x: 223, y: 45), CGPoint(x: 218, y: 48)),
+                .cubic(CGPoint(x: 216, y: 54), CGPoint(x: 234, y: 56), CGPoint(x: 228, y: 72)),
+                .cubic(CGPoint(x: 224, y: 80), CGPoint(x: 216, y: 88), CGPoint(x: 213, y: 83))
+            ]),
+            // f crossbar
+            sampleStroke(start: CGPoint(x: 209, y: 45), segments: [
+                .cubic(CGPoint(x: 219, y: 44), CGPoint(x: 232, y: 47), CGPoint(x: 239, y: 45))
+            ])
+        ]
+    }
+}
+
 // MARK: - Main ViewController
 
 class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
@@ -1578,9 +2270,14 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     private let originalsSchemeHandler = PicShelfOriginalsSchemeHandler()
     private let thumbnailsSchemeHandler = PicShelfThumbnailsSchemeHandler()
     private var currentStatusBarStyle: UIStatusBarStyle = .lightContent
+    private var desiredTheme: String = "dark"
+    private var startupCoverView: PicShelfStartupCoverView?
+    private var isWebStartupReady: Bool = false
+    private var startupDismissWorkItem: DispatchWorkItem?
+    private var startupSafetyWorkItem: DispatchWorkItem?
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
-        return currentStatusBarStyle
+        return startupCoverView != nil ? .lightContent : currentStatusBarStyle
     }
 
     override var prefersStatusBarHidden: Bool {
@@ -1589,7 +2286,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 9/255, green: 13/255, blue: 22/255, alpha: 1)
+        view.backgroundColor = UIColor(red: 9/255, green: 3/255, blue: 12/255, alpha: 1)
 
         // Ensure video & audio playback works at full volume even when iPhone mute switch is on
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
@@ -1599,7 +2296,80 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         PicShelfLocalMediaServer.shared.start()
 
         setupWebView()
+        setupStartupCover()
         loadLocalApp()
+    }
+
+    private func setupStartupCover() {
+        let cover = PicShelfStartupCoverView(frame: view.bounds)
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        cover.onWordmarkComplete = { [weak self] in
+            self?.tryDismissStartupCoverIfReady()
+        }
+        view.addSubview(cover)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: view.topAnchor),
+            cover.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            cover.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        startupCoverView = cover
+        cover.startAnimation()
+
+        // Safety fallback so startup cover can never get stuck even if WebView fails to signal readiness
+        let safety = DispatchWorkItem { [weak self] in
+            self?.dismissStartupCover(animated: true)
+        }
+        startupSafetyWorkItem = safety
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15.0, execute: safety)
+    }
+
+    func updateStartupLanguage(_ lang: String) {
+        startupCoverView?.updateLanguage(lang)
+    }
+
+    func onWebStartupReady() {
+        isWebStartupReady = true
+        tryDismissStartupCoverIfReady()
+    }
+
+    func onWebStartupFailed() {
+        dismissStartupCover(animated: true)
+    }
+
+    private func tryDismissStartupCoverIfReady() {
+        guard isWebStartupReady, let cover = startupCoverView else { return }
+        if cover.wordmarkCompleted {
+            startupDismissWorkItem?.cancel()
+            startupDismissWorkItem = nil
+            // Brief 180ms pause so the completed "PicShelf" signature settles cleanly before revealing Dock
+            let work = DispatchWorkItem { [weak self] in
+                self?.dismissStartupCover(animated: true)
+            }
+            startupDismissWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
+    }
+
+    private func dismissStartupCover(animated: Bool) {
+        startupDismissWorkItem?.cancel()
+        startupDismissWorkItem = nil
+        startupSafetyWorkItem?.cancel()
+        startupSafetyWorkItem = nil
+        guard let cover = startupCoverView else { return }
+        startupCoverView = nil
+        setNeedsStatusBarAppearanceUpdate()
+        if animated {
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.curveEaseOut]) {
+                cover.alpha = 0
+            } completion: { _ in
+                cover.stopAnimation()
+                cover.removeFromSuperview()
+            }
+        } else {
+            cover.stopAnimation()
+            cover.removeFromSuperview()
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -1613,6 +2383,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     }
 
     func updateAppearance(theme: String) {
+        desiredTheme = theme
         let isLight = (theme.lowercased() == "light")
         if isLight {
             if #available(iOS 13.0, *) {
@@ -1641,6 +2412,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     func notifyAppActive() {
         PicShelfLocalMediaServer.shared.ensureRunning()
         try? AVAudioSession.sharedInstance().setActive(true)
+        startupCoverView?.startAnimation()
         bridge.startSensors()
         let origLit = PicShelfLocalMediaServer.shared.originalsOrigin.map { "\"\($0)\"" } ?? "null"
         let thumbLit = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
@@ -1651,6 +2423,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     }
 
     func notifyAppInactive() {
+        startupCoverView?.stopAnimation()
         bridge.stopSensors()
         webView?.evaluateJavaScript(
             "(function(){ try { var v = document.getElementById('detailVideo'); if (v && !v.paused) { if (typeof silenceIosAudioForPause === 'function') silenceIosAudioForPause(v); v.pause(); } } catch(_){} if (window.state && window.state.biometricLock) { window.state.isAppLocked = true; if (window.showAppLock) window.showAppLock(); } })();",
@@ -1781,10 +2554,12 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 requestMediaLocationAccess: function() { send('getCurrentLocation', { callbackId: '' }); },
                 setStartupAppearance: function(theme) { send('setStartupAppearance', { theme: String(theme || 'dark') }); },
                 setStartupLanguage: function(lang) {
-                    try { localStorage.setItem('app_language', String(lang || 'en')); } catch(_) {}
+                    var code = String(lang || 'en');
+                    try { localStorage.setItem('app_language', code); } catch(_) {}
+                    send('setStartupLanguage', { language: code });
                 },
-                onStartupReady: function() {},
-                onStartupFailed: function() {},
+                onStartupReady: function() { send('onStartupReady'); },
+                onStartupFailed: function() { send('onStartupFailed'); },
                 clearCache: function() {},
                 setPushUpdatesEnabled: function(enabled) {
                     try { localStorage.setItem('ios_push_enabled', enabled ? 'true' : 'false'); } catch(_) {}
