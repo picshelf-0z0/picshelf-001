@@ -97,12 +97,59 @@
   ];
 
   const STICKER_PACKS = {
-    sparkles: { label: 'Sparkles', items: ['✨', '💖', '🔥', '👑', '🦋', '🌟', '💫', '🎀', '🌈', '⚡', '💎', '🫧', '🌙', '⭐'] },
-    party:    { label: 'Party',    items: ['🎂', '🎉', '🥳', '🎈', '🥂', '🎁', '💐', '🎊', '🕯️', '🏆', '🎶', '💌', '❤️‍🔥', '🫶'] },
-    travel:   { label: 'Travel',   items: ['✈️', '🌴', '🏖️', '🗼', '🏔️', '🌅', '📷', '🗺️', '🚗', '⛵', '🌺', '☀️', '🌊', '🎡'] },
-    cozy:     { label: 'Food',     items: ['🥐', '☕', '🍓', '🍦', '🍕', '🥑', '🧁', '🧋', '🍒', '🍋', '🍩', '🍷', '🍰', '🌸'] },
-    badges:   { label: 'Stamps',   kind: 'badge', items: ['ENJOY', 'VLOG', 'LOVE', 'NEW', 'MOOD', 'VIP', 'MEMORIES', 'PURE', '100%', '2026', 'DREAM', 'GLOW'] }
+    trending: { label: 'Trending', items: ['✨', '💖', '🔥', '👑', '🦋', '🌟', '💫', '🎀', '🌈', '⚡', '💎', '🫧', '🌙', '⭐', '🪩', '🪽', '🧿', '🫶'] },
+    hearts:   { label: 'Hearts',   items: ['❤️', '🩷', '🧡', '💛', '💚', '💙', '💜', '🤍', '🖤', '💕', '💞', '💓', '💗', '💘', '💝', '💌', '💋', '🌹'] },
+    party:    { label: 'Party',    items: ['🎂', '🎉', '🥳', '🎈', '🥂', '🎁', '💐', '🎊', '🕯️', '🏆', '🎶', '🪩', '🧁', '🍾', '👑', '🎀', '🪅', '🎆'] },
+    travel:   { label: 'Travel',   items: ['✈️', '🌴', '🏖️', '🗼', '🏔️', '🌅', '📷', '🗺️', '🚗', '⛵', '🌺', '☀️', '🌊', '🎡', '🏕️', '🗽', '🏛️', '🧳'] },
+    nature:   { label: 'Nature',   items: ['🌸', '🌺', '🌻', '🌷', '🌹', '🌼', '💐', '🍀', '🌿', '🪴', '🌵', '🍂', '🍁', '🦋', '🐝', '🌈', '☁️', '🌙'] },
+    food:     { label: 'Food',     items: ['🥐', '☕', '🍓', '🍦', '🍕', '🥑', '🧁', '🧋', '🍒', '🍋', '🍩', '🍷', '🍰', '🍔', '🌮', '🍣', '🍉', '🥂'] },
+    cute:     { label: 'Cute',     items: ['🐶', '🐱', '🐰', '🐻', '🐼', '🐨', '🦊', '🦁', '🦄', '🐥', '🐾', '🐝', '🦋', '🐬', '🦩', '🐢', '🦖', '🧸'] },
+    mood:     { label: 'Mood',     items: ['😍', '🥰', '😎', '🤩', '😂', '😭', '🥺', '🤭', '😜', '🥳', '😇', '🤠', '🫶', '✌️', '🤟', '🙌', '👏', '💯'] },
+    badges:   { label: 'Stamps',   kind: 'badge', items: ['ENJOY', 'VLOG', 'LOVE', 'NEW', 'MOOD', 'VIP', 'MEMORIES', 'PURE', '100%', '2026', 'DREAM', 'GLOW', 'VIBES', 'HAPPY', 'VACAY', 'BESTIE', 'AESTHETIC', 'LIMITED'] },
+    decor:    { label: 'Decor',    kind: 'decor', items: [
+      { id: 'washi_pink', label: 'Tape 🎀' },
+      { id: 'washi_gold', label: 'Gold Tape' },
+      { id: 'star_burst', label: 'Starburst' },
+      { id: 'heart_ring', label: 'Heart Ring' },
+      { id: 'sparkle_halo', label: 'Halo ✨' },
+      { id: 'sunburst', label: 'Sunburst' },
+      { id: 'speech_bubble', label: 'Bubble 💬' },
+      { id: 'laurel', label: 'Laurel 🏆' },
+      { id: 'crown_vec', label: 'Crown 👑' },
+      { id: 'neon_arrow', label: 'Arrow ➜' },
+      { id: 'ribbon', label: 'Ribbon' },
+      { id: 'film_frame', label: 'Film 🎞️' }
+    ] }
   };
+
+  const CUSTOM_COLOR_KEY = 'picshelf_creative_custom_colors_v1';
+  function getSavedCustomColors() {
+    const out = [];
+    const seen = new Set();
+    const pushCol = (c) => {
+      if (typeof c !== 'string') return;
+      const h = c.trim().toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(h) && !seen.has(h)) { seen.add(h); out.push(h); }
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem(CUSTOM_COLOR_KEY) || '[]');
+      if (Array.isArray(saved)) saved.forEach(pushCol);
+    } catch (_) {}
+    if (Array.isArray(window.state?.customColors)) {
+      window.state.customColors.forEach(pushCol);
+    }
+    if (window.state?.accentColor) pushCol(window.state.accentColor);
+    return out.slice(0, 12);
+  }
+  function rememberCustomColor(hex) {
+    if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex.trim())) return;
+    const norm = hex.trim().toLowerCase();
+    try {
+      const cur = JSON.parse(localStorage.getItem(CUSTOM_COLOR_KEY) || '[]');
+      const next = [norm, ...(Array.isArray(cur) ? cur.filter(c => c.toLowerCase() !== norm) : [])].slice(0, 10);
+      localStorage.setItem(CUSTOM_COLOR_KEY, JSON.stringify(next));
+    } catch (_) {}
+  }
 
   const PALETTE_COLORS = [
     '#ffffff', '#0f172a', '#f43f5e', '#ec4899', '#a855f7', '#6366f1',
@@ -146,7 +193,7 @@
     textStyleId: 'modern',
     textColor: '#ffffff',
     textBgMode: 'none', // 'none' | 'solid' | 'frosted'
-    stickerPack: 'sparkles',
+    stickerPack: 'trending',
 
     // Draw / Doodle state
     draw: {
@@ -171,15 +218,19 @@
       dirty: true
     },
 
-    // Smart Remove state
+    // Smart Remove state (Picsart MI-GAN AI On-Demand + Exemplar Patch-Copy Fallback)
     remove: {
-      brushSize: 28,
-      autoApply: true,
+      brushSize: 30,
+      autoApply: false,
       maskCanvas: null,
       hasMask: false,
-      undoStack: [], // Array of ImageData / canvas snapshots (max 6)
+      undoStack: [], // Array of canvas snapshots (max 6)
       painting: false,
-      lastPt: null
+      lastPt: null,
+      busy: false,
+      activeReqId: null,
+      pendingRunAfterDownload: false,
+      modelStatus: { state: 'missing', downloaded: 0, total: 28079181, error: null }
     },
 
     // Pointer interaction state
@@ -582,30 +633,167 @@
     return cs.enhancedCanvas;
   }
 
-  // Fast on-device multi-pass edge-guided inpainter for Smart Remove
-  function applySmartRemoveMask() {
+  // ==========================================================================
+  // Smart Remove: Native Picsart MI-GAN 512 ONNX + Exemplar Patch-Copy Fallback
+  // ==========================================================================
+  function hasNativeObjectRemove() {
+    try {
+      return !!(window.AndroidApp && typeof window.AndroidApp.objectRemoveAvailable === 'function' && window.AndroidApp.objectRemoveAvailable());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function refreshRemoveModelStatus() {
+    if (hasNativeObjectRemove() && typeof window.AndroidApp.objectRemoveModelStatus === 'function') {
+      try {
+        const parsed = JSON.parse(window.AndroidApp.objectRemoveModelStatus() || '{}');
+        if (parsed && parsed.state) cs.remove.modelStatus = parsed;
+      } catch (_) {}
+    }
+    updateRemoveAiBar();
+  }
+
+  function updateRemoveAiBar() {
+    const statusEl = document.getElementById('creativeRemoveAiStatus');
+    const dlBtn = document.getElementById('creativeRemoveDownloadBtn');
+    const progWrap = document.getElementById('creativeRemoveProgress');
+    const progFill = document.getElementById('creativeRemoveProgressFill');
+    const applyBtn = document.getElementById('creativeRemoveApplyBtn');
+    if (!statusEl) return;
+
+    const nativeOk = hasNativeObjectRemove();
+    const st = cs.remove.modelStatus || { state: 'missing', downloaded: 0, total: 28079181 };
+    const pct = st.total > 0 ? clamp(Math.round((st.downloaded / st.total) * 100), 0, 100) : 0;
+
+    statusEl.classList.remove('ready', 'busy');
+    if (applyBtn) applyBtn.disabled = !!cs.remove.busy;
+
+    if (cs.remove.busy) {
+      statusEl.classList.add('busy');
+      statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> AI removing object cleanly…';
+      if (dlBtn) dlBtn.style.display = 'none';
+      if (progWrap) progWrap.style.display = 'none';
+      return;
+    }
+
+    if (!nativeOk) {
+      statusEl.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Brush object, then tap Remove';
+      if (dlBtn) dlBtn.style.display = 'none';
+      if (progWrap) progWrap.style.display = 'none';
+      return;
+    }
+
+    if (st.state === 'ready') {
+      statusEl.classList.add('ready');
+      statusEl.innerHTML = '<i class="fa-solid fa-circle-check"></i> AI Object Removal Ready (MI-GAN)';
+      if (dlBtn) dlBtn.style.display = 'none';
+      if (progWrap) progWrap.style.display = 'none';
+    } else if (st.state === 'downloading') {
+      statusEl.classList.add('busy');
+      const mbDone = (st.downloaded / (1024 * 1024)).toFixed(1);
+      const mbTot = (st.total / (1024 * 1024)).toFixed(0);
+      statusEl.innerHTML = `<i class="fa-solid fa-cloud-arrow-down"></i> Downloading AI Eraser ${pct}% (${mbDone}/${mbTot} MB)`;
+      if (dlBtn) {
+        dlBtn.style.display = 'inline-flex';
+        dlBtn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop';
+      }
+      if (progWrap) progWrap.style.display = 'block';
+      if (progFill) progFill.style.width = `${pct}%`;
+    } else {
+      statusEl.innerHTML = st.state === 'error'
+        ? '<i class="fa-solid fa-triangle-exclamation"></i> AI download paused — tap to retry'
+        : '<i class="fa-solid fa-wand-magic-sparkles"></i> Paint object &amp; tap Remove (AI 28 MB)';
+      if (dlBtn) {
+        dlBtn.style.display = 'inline-flex';
+        dlBtn.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> Download AI (28 MB)';
+      }
+      if (progWrap) progWrap.style.display = 'none';
+    }
+  }
+
+  function triggerObjectRemove() {
+    if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) {
+      window.showToast?.('Brush over the object to remove first');
+      return false;
+    }
+    if (cs.remove.busy) return false;
+
+    // Prefer native Picsart MI-GAN 512 ONNX neural inpainting on Android & iOS!
+    if (hasNativeObjectRemove()) {
+      refreshRemoveModelStatus();
+      const st = cs.remove.modelStatus;
+      if (st.state === 'ready') {
+        runNativeMiganRemove();
+        return true;
+      }
+      if (st.state === 'downloading') {
+        cs.remove.pendingRunAfterDownload = true;
+        window.showToast?.('AI Eraser downloading… will remove automatically when ready!');
+        return true;
+      }
+      // Kick off one-time 28 MB download and auto-run MI-GAN as soon as it finishes!
+      cs.remove.pendingRunAfterDownload = true;
+      window.AndroidApp.objectRemoveDownload();
+      refreshRemoveModelStatus();
+      window.showToast?.('⚡ Downloading AI Eraser (28 MB one-time)…');
+      return true;
+    }
+
+    // Pure-browser fallback: Exemplar Patch-Copy Inpainter
+    if (applyExemplarFallbackRemove()) {
+      window.showToast?.('✨ Object removed!');
+      return true;
+    }
+    return false;
+  }
+
+  function runNativeMiganRemove() {
+    if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) return;
+    cs.remove.busy = true;
+    const reqId = uid('rm');
+    cs.remove.activeReqId = reqId;
+    updateRemoveAiBar();
+
+    // Save undo snapshot before applying
+    const w = cs.workCanvas.width, h = cs.workCanvas.height;
+    const snap = document.createElement('canvas');
+    snap.width = w; snap.height = h;
+    snap.getContext('2d').drawImage(cs.workCanvas, 0, 0);
+    cs.remove._pendingSnap = snap;
+
+    const imgDataUrl = cs.workCanvas.toDataURL('image/jpeg', 0.96);
+    const maskDataUrl = cs.remove.maskCanvas.toDataURL('image/png');
+    try {
+      window.AndroidApp.objectRemoveInpaint(reqId, imgDataUrl, maskDataUrl);
+    } catch (e) {
+      cs.remove.busy = false;
+      cs.remove.activeReqId = null;
+      cs.remove._pendingSnap = null;
+      updateRemoveAiBar();
+      applyExemplarFallbackRemove();
+    }
+  }
+
+  // Exemplar patch-copy fallback (samples real surrounding texture patches instead of flat triangles)
+  function applyExemplarFallbackRemove() {
     if (!cs.workCanvas || !cs.remove.maskCanvas || !cs.remove.hasMask) return false;
-    const w = cs.workCanvas.width;
-    const h = cs.workCanvas.height;
+    const w = cs.workCanvas.width, h = cs.workCanvas.height;
     const mCtx = cs.remove.maskCanvas.getContext('2d', { willReadFrequently: true });
     const maskData = mCtx.getImageData(0, 0, w, h).data;
 
-    // Find tight bounding box of painted mask
     let minX = w, minY = h, maxX = -1, maxY = -1;
     for (let y = 0; y < h; y++) {
       const row = y * w;
       for (let x = 0; x < w; x++) {
         if (maskData[(row + x) * 4 + 3] > 20) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
         }
       }
     }
     if (maxX < minX || maxY < minY) return false;
 
-    // Save undo snapshot before mutating workCanvas
     const wCtx = cs.workCanvas.getContext('2d', { willReadFrequently: true });
     const snap = document.createElement('canvas');
     snap.width = w; snap.height = h;
@@ -613,108 +801,91 @@
     cs.remove.undoStack.push(snap);
     if (cs.remove.undoStack.length > 6) cs.remove.undoStack.shift();
 
-    // Expand ROI by context margin
-    const pad = 28;
-    const rx0 = Math.max(0, minX - pad);
-    const ry0 = Math.max(0, minY - pad);
-    const rx1 = Math.min(w - 1, maxX + pad);
-    const ry1 = Math.min(h - 1, maxY + pad);
-    const rw = rx1 - rx0 + 1;
-    const rh = ry1 - ry0 + 1;
+    const pad = Math.min(96, Math.max(40, Math.round(Math.max(maxX - minX, maxY - minY) * 0.6)));
+    const rx0 = Math.max(0, minX - pad), ry0 = Math.max(0, minY - pad);
+    const rx1 = Math.min(w - 1, maxX + pad), ry1 = Math.min(h - 1, maxY + pad);
+    const rw = rx1 - rx0 + 1, rh = ry1 - ry0 + 1;
 
     const roi = wCtx.getImageData(rx0, ry0, rw, rh);
     const px = roi.data;
-    const mask = new Uint8Array(rw * rh);
+    const orig = new Uint8ClampedArray(px);
     const known = new Uint8Array(rw * rh);
+    const origMask = new Uint8Array(rw * rh);
 
     for (let y = 0; y < rh; y++) {
       for (let x = 0; x < rw; x++) {
-        const gi = ((ry0 + y) * w + (rx0 + x)) * 4 + 3;
-        const m = maskData[gi] > 20 ? 1 : 0;
-        mask[y * rw + x] = m;
+        const m = maskData[((ry0 + y) * w + (rx0 + x)) * 4 + 3] > 20 ? 1 : 0;
+        origMask[y * rw + x] = m;
         known[y * rw + x] = m ? 0 : 1;
       }
     }
 
-    // Phase 1: Onion-peel inward fill from known boundary pixels (preserves crisp color transitions)
-    const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
-    let remaining = 1;
-    let safety = Math.max(rw, rh) + 8;
-    const frontier = [];
-    while (remaining > 0 && safety-- > 0) {
-      remaining = 0;
-      frontier.length = 0;
-      for (let y = 0; y < rh; y++) {
-        for (let x = 0; x < rw; x++) {
-          const idx = y * rw + x;
-          if (known[idx]) continue;
-          remaining++;
-          let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
-          for (let d = 0; d < 8; d++) {
-            const nx = x + dirs[d][0], ny = y + dirs[d][1];
-            if (nx < 0 || nx >= rw || ny < 0 || ny >= rh) continue;
-            const nIdx = ny * rw + nx;
-            if (!known[nIdx]) continue;
-            const wt = d < 4 ? 1.0 : 0.707;
-            const p = nIdx * 4;
-            rSum += px[p] * wt; gSum += px[p + 1] * wt; bSum += px[p + 2] * wt;
-            wSum += wt;
-          }
-          if (wSum > 0) {
-            frontier.push(idx, rSum / wSum, gSum / wSum, bSum / wSum);
-          }
-        }
-      }
-      if (!frontier.length) break;
-      for (let i = 0; i < frontier.length; i += 4) {
-        const idx = frontier[i];
-        const p = idx * 4;
-        px[p] = frontier[i + 1];
-        px[p + 1] = frontier[i + 2];
-        px[p + 2] = frontier[i + 3];
-        known[idx] = 1;
-      }
-    }
-
-    // Phase 2: Fast harmonic diffusion smoothing inside mask + subtle micro-grain matching surround
-    const tmpR = new Float32Array(rw * rh);
-    const tmpG = new Float32Array(rw * rh);
-    const tmpB = new Float32Array(rw * rh);
-    for (let i = 0; i < rw * rh; i++) {
-      tmpR[i] = px[i * 4]; tmpG[i] = px[i * 4 + 1]; tmpB[i] = px[i * 4 + 2];
-    }
-    const iters = Math.min(24, Math.max(8, Math.round(Math.max(maxX - minX, maxY - minY) * 0.35)));
-    for (let it = 0; it < iters; it++) {
-      for (let y = 1; y < rh - 1; y++) {
-        for (let x = 1; x < rw - 1; x++) {
-          const idx = y * rw + x;
-          if (!mask[idx]) continue;
-          tmpR[idx] = (tmpR[idx - 1] + tmpR[idx + 1] + tmpR[idx - rw] + tmpR[idx + rw]) * 0.25;
-          tmpG[idx] = (tmpG[idx - 1] + tmpG[idx + 1] + tmpG[idx - rw] + tmpG[idx + rw]) * 0.25;
-          tmpB[idx] = (tmpB[idx - 1] + tmpB[idx + 1] + tmpB[idx - rw] + tmpB[idx + rw]) * 0.25;
+    // Collect valid unmasked candidate source centers for texture patch matching
+    const PR = 4; // 9x9 patch
+    const sources = [];
+    const stride = Math.max(3, Math.round(Math.sqrt(rw * rh) / 38));
+    for (let sy = PR; sy < rh - PR; sy += stride) {
+      for (let sx = PR; sx < rw - PR; sx += stride) {
+        if (!origMask[sy * rw + sx] && !origMask[(sy - PR) * rw + (sx - PR)] &&
+            !origMask[(sy + PR) * rw + (sx + PR)] && !origMask[(sy - PR) * rw + (sx + PR)] &&
+            !origMask[(sy + PR) * rw + (sx - PR)]) {
+          sources.push(sx, sy);
         }
       }
     }
 
-    // Estimate subtle surrounding texture grain so filled area matches natural photo noise
-    let varSum = 0, varCount = 0;
-    for (let y = 1; y < rh - 1; y++) {
-      for (let x = 1; x < rw - 1; x++) {
-        const idx = y * rw + x;
-        if (mask[idx]) continue;
-        const p = idx * 4, p2 = (idx + 1) * 4;
-        varSum += Math.abs(px[p] - px[p2]);
-        varCount++;
+    // Criminisi-style priority onion-peel copying real exemplar patches from surrounding background
+    const step = 3;
+    for (let pass = 0; pass < Math.max(rw, rh); pass++) {
+      let bestX = -1, bestY = -1, bestConf = -1;
+      for (let y = PR; y < rh - PR; y += step) {
+        for (let x = PR; x < rw - PR; x += step) {
+          if (known[y * rw + x]) continue;
+          let kCnt = 0;
+          for (let dy = -PR; dy <= PR; dy += 2) {
+            for (let dx = -PR; dx <= PR; dx += 2) {
+              if (known[(y + dy) * rw + (x + dx)]) kCnt++;
+            }
+          }
+          if (kCnt > bestConf) { bestConf = kCnt; bestX = x; bestY = y; }
+        }
       }
-    }
-    const grain = Math.min(6, (varCount ? varSum / varCount : 2) * 0.45);
+      if (bestX < 0 || bestConf <= 0) break;
 
-    for (let i = 0; i < rw * rh; i++) {
-      if (!mask[i]) continue;
-      const noise = grain > 0.4 ? (Math.sin(i * 12.9898) * 43758.5453 % 1 - 0.5) * grain * 2 : 0;
-      px[i * 4]     = clamp(Math.round(tmpR[i] + noise), 0, 255);
-      px[i * 4 + 1] = clamp(Math.round(tmpG[i] + noise), 0, 255);
-      px[i * 4 + 2] = clamp(Math.round(tmpB[i] + noise), 0, 255);
+      let bestSx = -1, bestSy = -1, bestErr = 1e18;
+      for (let s = 0; s < sources.length; s += 2) {
+        const sx = sources[s], sy = sources[s + 1];
+        let err = 0;
+        for (let dy = -PR; dy <= PR; dy += 2) {
+          for (let dx = -PR; dx <= PR; dx += 2) {
+            const ti = (bestY + dy) * rw + (bestX + dx);
+            if (!known[ti]) continue;
+            const si = (sy + dy) * rw + (sx + dx);
+            const dr = px[ti * 4] - orig[si * 4];
+            const dg = px[ti * 4 + 1] - orig[si * 4 + 1];
+            const db = px[ti * 4 + 2] - orig[si * 4 + 2];
+            err += dr * dr + dg * dg + db * db;
+            if (err >= bestErr) break;
+          }
+          if (err >= bestErr) break;
+        }
+        // Slight proximity preference keeps horizon/sand continuity intact
+        const distPen = ((sx - bestX) * (sx - bestX) + (sy - bestY) * (sy - bestY)) * 0.15;
+        if (err + distPen < bestErr) { bestErr = err + distPen; bestSx = sx; bestSy = sy; }
+      }
+      if (bestSx < 0) break;
+
+      for (let dy = -PR; dy <= PR; dy++) {
+        for (let dx = -PR; dx <= PR; dx++) {
+          const ti = (bestY + dy) * rw + (bestX + dx);
+          if (known[ti]) continue;
+          const si = (bestSy + dy) * rw + (bestSx + dx);
+          px[ti * 4] = orig[si * 4];
+          px[ti * 4 + 1] = orig[si * 4 + 1];
+          px[ti * 4 + 2] = orig[si * 4 + 2];
+          known[ti] = 1;
+        }
+      }
     }
 
     wCtx.putImageData(roi, rx0, ry0);
@@ -1081,7 +1252,106 @@
         });
         ctx.restore();
       } else if (layer.type === 'sticker') {
-        if (layer.kind === 'badge') {
+        if (layer.kind === 'decor') {
+          ctx.save();
+          ctx.scale(sc, sc);
+          const id = layer.value;
+          boxW = 140 * sc; boxH = 80 * sc;
+          if (id === 'washi_pink' || id === 'washi_gold') {
+            boxW = 180 * sc; boxH = 44 * sc;
+            ctx.fillStyle = id === 'washi_gold' ? 'rgba(251, 191, 36, 0.72)' : 'rgba(244, 114, 182, 0.72)';
+            ctx.fillRect(-90, -22, 180, 44);
+            ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 6]);
+            ctx.strokeRect(-86, -18, 172, 36);
+            ctx.setLineDash([]);
+          } else if (id === 'star_burst' || id === 'sunburst') {
+            boxW = 120 * sc; boxH = 120 * sc;
+            const rays = id === 'sunburst' ? 16 : 8;
+            ctx.beginPath();
+            for (let k = 0; k < rays * 2; k++) {
+              const r = (k % 2 === 0) ? 56 : (id === 'sunburst' ? 30 : 22);
+              const a = (k * Math.PI) / rays;
+              if (k === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+              else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+            }
+            ctx.closePath();
+            ctx.fillStyle = layer.color || '#facc15';
+            ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 10;
+            ctx.fill();
+          } else if (id === 'heart_ring') {
+            boxW = 124 * sc; boxH = 116 * sc;
+            ctx.beginPath();
+            ctx.moveTo(0, 40);
+            ctx.bezierCurveTo(-65, -2, -56, -54, 0, -22);
+            ctx.bezierCurveTo(56, -54, 65, -2, 0, 40);
+            ctx.strokeStyle = layer.color || '#ec4899';
+            ctx.lineWidth = 8;
+            ctx.shadowColor = layer.color || '#ec4899'; ctx.shadowBlur = 14;
+            ctx.stroke();
+          } else if (id === 'sparkle_halo') {
+            boxW = 140 * sc; boxH = 56 * sc;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 62, 20, 0, 0, Math.PI * 2);
+            ctx.strokeStyle = '#fef08a';
+            ctx.lineWidth = 6;
+            ctx.shadowColor = '#facc15'; ctx.shadowBlur = 18;
+            ctx.stroke();
+          } else if (id === 'speech_bubble') {
+            boxW = 156 * sc; boxH = 96 * sc;
+            drawRoundedRectPath(ctx, -74, -44, 148, 72, 24);
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.beginPath(); ctx.moveTo(-18, 28); ctx.lineTo(-34, 48); ctx.lineTo(4, 28); ctx.closePath(); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#0f172a'; ctx.font = '800 22px -apple-system,sans-serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('SO GOOD!', 0, -8);
+          } else if (id === 'laurel') {
+            boxW = 150 * sc; boxH = 110 * sc;
+            ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 5;
+            ctx.beginPath(); ctx.arc(0, 0, 46, Math.PI * 0.7, Math.PI * 1.35); ctx.stroke();
+            ctx.beginPath(); ctx.arc(0, 0, 46, -Math.PI * 0.35, Math.PI * 0.3); ctx.stroke();
+            ctx.fillStyle = '#fbbf24'; ctx.font = '800 22px Georgia,serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('★ TOP ★', 0, 0);
+          } else if (id === 'crown_vec') {
+            boxW = 136 * sc; boxH = 96 * sc;
+            ctx.beginPath();
+            ctx.moveTo(-54, 32); ctx.lineTo(-60, -24); ctx.lineTo(-24, 6);
+            ctx.lineTo(0, -38); ctx.lineTo(24, 6); ctx.lineTo(60, -24);
+            ctx.lineTo(54, 32); ctx.closePath();
+            const g = ctx.createLinearGradient(0, -38, 0, 32);
+            g.addColorStop(0, '#fef08a'); g.addColorStop(1, '#d97706');
+            ctx.fillStyle = g; ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 10;
+            ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+          } else if (id === 'neon_arrow') {
+            boxW = 150 * sc; boxH = 60 * sc;
+            ctx.strokeStyle = layer.color || '#38bdf8'; ctx.lineWidth = 8; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+            ctx.shadowColor = layer.color || '#38bdf8'; ctx.shadowBlur = 16;
+            ctx.beginPath(); ctx.moveTo(-64, 0); ctx.lineTo(52, 0); ctx.moveTo(26, -22); ctx.lineTo(56, 0); ctx.lineTo(26, 22); ctx.stroke();
+          } else if (id === 'ribbon') {
+            boxW = 180 * sc; boxH = 54 * sc;
+            ctx.fillStyle = layer.color || '#f43f5e';
+            ctx.beginPath();
+            ctx.moveTo(-88, -22); ctx.lineTo(88, -22); ctx.lineTo(74, 0); ctx.lineTo(88, 22);
+            ctx.lineTo(-88, 22); ctx.lineTo(-74, 0); ctx.closePath();
+            ctx.shadowColor = 'rgba(0,0,0,0.4)'; ctx.shadowBlur = 10; ctx.fill();
+            ctx.shadowBlur = 0; ctx.fillStyle = '#ffffff'; ctx.font = '800 20px Georgia,serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('FEATURED', 0, 1);
+          } else { // film_frame
+            boxW = 168 * sc; boxH = 122 * sc;
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 6;
+            ctx.strokeRect(-78, -55, 156, 110);
+            ctx.fillStyle = '#ffffff';
+            for (let fx = -66; fx <= 56; fx += 24) {
+              ctx.fillRect(fx, -49, 10, 7); ctx.fillRect(fx, 42, 10, 7);
+            }
+          }
+          ctx.restore();
+        } else if (layer.kind === 'badge') {
           ctx.save();
           ctx.scale(sc, sc);
           ctx.font = '900 34px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
@@ -1390,7 +1660,7 @@
       const p = getCanvasNormPoint(pt.clientX, pt.clientY);
       const dx = p.x - cs.pointer.startX;
       const dy = p.y - cs.pointer.startY;
-      if (Math.hypot(dx, dy) > 0.008) cs.pointer.moved = true;
+      if (Math.hypot(dx, dy) > 0.025) cs.pointer.moved = true;
 
       if (cs.pointer.mode === 'draw' && cs.draw.activeStroke) {
         cs.draw.activeStroke.points.push([p.x, p.y]);
@@ -1447,7 +1717,7 @@
         cs.remove.painting = false;
         cs.remove.lastPt = null;
         if (cs.remove.autoApply && cs.remove.hasMask) {
-          applySmartRemoveMask();
+          triggerObjectRemove();
         }
       } else if (mode === 'pan-cell' && !moved) {
         const cell = cs.collage.cells[cs.collage.selectedCell];
@@ -1696,17 +1966,35 @@
       });
     }
 
-    // 4. Collage Background Rail (Blur + Pattern + Gradients + Solid Colors + Color Picker)
-    const bgRail = document.getElementById('collageBgRail');
-    if (bgRail && !bgRail.children.length) {
+    // 4. Collage Background Rail (Palette Studio + Blur + Dots + Gradients + Solid + Saved Custom Colors)
+    const renderCollageBgRail = () => {
+      const bgRail = document.getElementById('collageBgRail');
+      if (!bgRail) return;
+      const customCols = getSavedCustomColors();
       bgRail.innerHTML = `
-        <button type="button" class="creative-pill-btn" data-bg-type="blur"><i class="fa-solid fa-water"></i> Blur</button>
-        <button type="button" class="creative-pill-btn" data-bg-type="pattern"><i class="fa-solid fa-braille"></i> Dots</button>
-        ${BG_GRADIENTS.map(g => `<button type="button" class="creative-swatch" data-bg-type="gradient" data-bg-val="${g.css}" style="background:${g.css};"></button>`).join('')}
-        ${BG_COLORS.map(col => `<button type="button" class="creative-swatch ${col === cs.collage.bgValue ? 'active' : ''}" data-bg-type="color" data-bg-val="${col}" style="background:${col};"></button>`).join('')}
-        <input type="color" class="creative-color-input" id="collageBgColorPicker" value="#0f172a" title="Custom background color">
+        <button type="button" class="creative-palette-btn" id="collagePaletteStudioBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
+        <button type="button" class="creative-pill-btn ${cs.collage.bgType === 'blur' ? 'active' : ''}" data-bg-type="blur"><i class="fa-solid fa-water"></i> Blur</button>
+        <button type="button" class="creative-pill-btn ${cs.collage.bgType === 'pattern' ? 'active' : ''}" data-bg-type="pattern"><i class="fa-solid fa-braille"></i> Dots</button>
+        ${customCols.map(col => `<button type="button" class="creative-swatch ${cs.collage.bgType === 'color' && cs.collage.bgValue.toLowerCase() === col ? 'active' : ''}" data-bg-type="color" data-bg-val="${col}" style="background:${col};" title="Custom ${col.toUpperCase()}"></button>`).join('')}
+        ${BG_GRADIENTS.map(g => `<button type="button" class="creative-swatch ${cs.collage.bgType === 'gradient' && cs.collage.bgValue === g.css ? 'active' : ''}" data-bg-type="gradient" data-bg-val="${g.css}" style="background:${g.css};"></button>`).join('')}
+        ${BG_COLORS.map(col => `<button type="button" class="creative-swatch ${cs.collage.bgType === 'color' && cs.collage.bgValue.toLowerCase() === col ? 'active' : ''}" data-bg-type="color" data-bg-val="${col}" style="background:${col};"></button>`).join('')}
       `;
+    };
+    const bgRail = document.getElementById('collageBgRail');
+    if (bgRail && !bgRail._csBound) {
+      bgRail._csBound = true;
+      renderCollageBgRail();
       bgRail.addEventListener('click', (e) => {
+        if (e.target.closest('#collagePaletteStudioBtn')) {
+          openPaletteStudioFor(cs.collage.bgType === 'color' ? cs.collage.bgValue : '#f43f5e', (hex) => {
+            cs.collage.bgType = 'color';
+            cs.collage.bgValue = hex;
+            rememberCustomColor(hex);
+            renderCollageBgRail();
+            scheduleRender();
+          });
+          return;
+        }
         const btn = e.target.closest('[data-bg-type]');
         if (!btn) return;
         cs.collage.bgType = btn.dataset.bgType;
@@ -1714,14 +2002,9 @@
         bgRail.querySelectorAll('[data-bg-type]').forEach(b => b.classList.toggle('active', b === btn));
         scheduleRender();
       });
-      document.getElementById('collageBgColorPicker')?.addEventListener('input', (e) => {
-        cs.collage.bgType = 'color';
-        cs.collage.bgValue = e.target.value;
-        scheduleRender();
-      });
     }
 
-    // 5. Text Fonts & Colors
+    // 5. Text Fonts & Colors (with PicShelf Palette Studio!)
     const fontRail = document.getElementById('creativeTextFontsRail');
     if (fontRail && !fontRail.children.length) {
       fontRail.innerHTML = FONT_STYLES.map(f => `
@@ -1738,14 +2021,43 @@
       });
     }
 
-    const textColorRail = document.getElementById('creativeTextColorsRail');
-    if (textColorRail && !textColorRail.children.length) {
+    const renderTextColorRail = () => {
+      const textColorRail = document.getElementById('creativeTextColorsRail');
+      if (!textColorRail) return;
+      const customCols = getSavedCustomColors();
       textColorRail.innerHTML = `
-        <button type="button" class="creative-pill-btn" id="creativeTextBgToggle"><i class="fa-solid fa-highlighter"></i> Pill</button>
-        ${PALETTE_COLORS.map(c => `<button type="button" class="creative-swatch ${c === cs.textColor ? 'active' : ''}" data-tcol="${c}" style="background:${c};"></button>`).join('')}
-        <input type="color" class="creative-color-input" id="creativeTextCustomColor" value="#ffffff" title="Custom text color">
+        <button type="button" class="creative-palette-btn" id="creativeTextPaletteBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
+        <button type="button" class="creative-pill-btn ${cs.textBgMode !== 'none' ? 'active' : ''}" id="creativeTextBgToggle"><i class="fa-solid fa-highlighter"></i> Pill</button>
+        ${customCols.map(c => `<button type="button" class="creative-swatch ${c === cs.textColor.toLowerCase() ? 'active' : ''}" data-tcol="${c}" style="background:${c};" title="Custom ${c.toUpperCase()}"></button>`).join('')}
+        ${PALETTE_COLORS.map(c => `<button type="button" class="creative-swatch ${c === cs.textColor.toLowerCase() ? 'active' : ''}" data-tcol="${c}" style="background:${c};"></button>`).join('')}
       `;
+    };
+    const textColorRail = document.getElementById('creativeTextColorsRail');
+    if (textColorRail && !textColorRail._csBound) {
+      textColorRail._csBound = true;
+      renderTextColorRail();
       textColorRail.addEventListener('click', (e) => {
+        if (e.target.closest('#creativeTextPaletteBtn')) {
+          openPaletteStudioFor(cs.textColor || '#ffffff', (hex) => {
+            cs.textColor = hex;
+            rememberCustomColor(hex);
+            const sel = cs.layers.find(l => l.id === cs.selectedLayerId && l.type === 'text');
+            if (sel) sel.color = hex;
+            renderTextColorRail();
+            scheduleRender();
+          });
+          return;
+        }
+        if (e.target.closest('#creativeTextBgToggle')) {
+          const modes = ['none', 'frosted', 'solid'];
+          const next = modes[(modes.indexOf(cs.textBgMode) + 1) % modes.length];
+          cs.textBgMode = next;
+          const sel = cs.layers.find(l => l.id === cs.selectedLayerId && l.type === 'text');
+          if (sel) sel.bgMode = next;
+          renderTextColorRail();
+          scheduleRender();
+          return;
+        }
         const sw = e.target.closest('[data-tcol]');
         if (sw) {
           cs.textColor = sw.dataset.tcol;
@@ -1755,24 +2067,9 @@
           scheduleRender();
         }
       });
-      document.getElementById('creativeTextCustomColor')?.addEventListener('input', (e) => {
-        cs.textColor = e.target.value;
-        const sel = cs.layers.find(l => l.id === cs.selectedLayerId && l.type === 'text');
-        if (sel) sel.color = cs.textColor;
-        scheduleRender();
-      });
-      document.getElementById('creativeTextBgToggle')?.addEventListener('click', (e) => {
-        const modes = ['none', 'frosted', 'solid'];
-        const next = modes[(modes.indexOf(cs.textBgMode) + 1) % modes.length];
-        cs.textBgMode = next;
-        e.currentTarget.classList.toggle('active', next !== 'none');
-        const sel = cs.layers.find(l => l.id === cs.selectedLayerId && l.type === 'text');
-        if (sel) sel.bgMode = next;
-        scheduleRender();
-      });
     }
 
-    // 6. Stickers Packs
+    // 6. Stickers Packs (10 Rich Categories · 175+ Stickers)
     const stTabs = document.getElementById('creativeStickerPacks');
     const stRail = document.getElementById('creativeStickersRail');
     if (stTabs && stRail && !stTabs.children.length) {
@@ -1780,11 +2077,14 @@
         <button type="button" class="studio-subnav-btn ${k === cs.stickerPack ? 'active' : ''}" data-pack="${k}">${p.label}</button>
       `).join('');
       const renderPack = (packKey) => {
-        const pack = STICKER_PACKS[packKey] || STICKER_PACKS.sparkles;
-        const isBadge = pack.kind === 'badge';
-        stRail.innerHTML = pack.items.map(val => `
-          <button type="button" class="creative-sticker-btn ${isBadge ? 'badge-sticker' : ''}" data-sticker="${val}" data-kind="${isBadge ? 'badge' : 'emoji'}">${val}</button>
-        `).join('');
+        const pack = STICKER_PACKS[packKey] || STICKER_PACKS.trending;
+        const kind = pack.kind || 'emoji';
+        stRail.innerHTML = pack.items.map(item => {
+          if (kind === 'decor') {
+            return `<button type="button" class="creative-sticker-btn badge-sticker" data-sticker="${item.id}" data-kind="decor">${item.label}</button>`;
+          }
+          return `<button type="button" class="creative-sticker-btn ${kind === 'badge' ? 'badge-sticker' : ''}" data-sticker="${item}" data-kind="${kind}">${item}</button>`;
+        }).join('');
       };
       renderPack(cs.stickerPack);
       stTabs.addEventListener('click', (e) => {
@@ -1820,24 +2120,54 @@
       });
     }
 
-    // 7. Draw Colors Rail
-    const drawColors = document.getElementById('creativeDrawColorsRail');
-    if (drawColors && !drawColors.children.length) {
+    // 7. Draw Colors Rail (with PicShelf Palette Studio!)
+    const renderDrawColorRail = () => {
+      const drawColors = document.getElementById('creativeDrawColorsRail');
+      if (!drawColors) return;
+      const customCols = getSavedCustomColors();
       drawColors.innerHTML = `
-        ${PALETTE_COLORS.map(c => `<button type="button" class="creative-swatch ${c === cs.draw.color ? 'active' : ''}" data-dcol="${c}" style="background:${c};"></button>`).join('')}
-        <input type="color" class="creative-color-input" id="creativeDrawCustomColor" value="#f43f5e" title="Custom brush color">
+        <button type="button" class="creative-palette-btn" id="creativeDrawPaletteBtn" title="Open Palette Studio"><span class="creative-palette-ring"></span> Palette</button>
+        ${customCols.map(c => `<button type="button" class="creative-swatch ${c === cs.draw.color.toLowerCase() ? 'active' : ''}" data-dcol="${c}" style="background:${c};" title="Custom ${c.toUpperCase()}"></button>`).join('')}
+        ${PALETTE_COLORS.map(c => `<button type="button" class="creative-swatch ${c === cs.draw.color.toLowerCase() ? 'active' : ''}" data-dcol="${c}" style="background:${c};"></button>`).join('')}
       `;
+    };
+    const drawColors = document.getElementById('creativeDrawColorsRail');
+    if (drawColors && !drawColors._csBound) {
+      drawColors._csBound = true;
+      renderDrawColorRail();
       drawColors.addEventListener('click', (e) => {
+        if (e.target.closest('#creativeDrawPaletteBtn')) {
+          openPaletteStudioFor(cs.draw.color || '#f43f5e', (hex) => {
+            cs.draw.color = hex;
+            if (cs.draw.brush === 'eraser') setDrawBrush('pen');
+            rememberCustomColor(hex);
+            renderDrawColorRail();
+          });
+          return;
+        }
         const sw = e.target.closest('[data-dcol]');
         if (!sw) return;
         cs.draw.color = sw.dataset.dcol;
         if (cs.draw.brush === 'eraser') setDrawBrush('pen');
         drawColors.querySelectorAll('[data-dcol]').forEach(b => b.classList.toggle('active', b === sw));
       });
-      document.getElementById('creativeDrawCustomColor')?.addEventListener('input', (e) => {
-        cs.draw.color = e.target.value;
-        if (cs.draw.brush === 'eraser') setDrawBrush('pen');
+    }
+  }
+
+  function openPaletteStudioFor(initialHex, onApply) {
+    if (typeof window.openCustomColorPickerModal === 'function') {
+      window.openCustomColorPickerModal({
+        initialColor: initialHex || '#f43f5e',
+        onApply: (pickedHex) => {
+          if (pickedHex) onApply(pickedHex);
+        }
       });
+    } else {
+      const inp = document.createElement('input');
+      inp.type = 'color';
+      inp.value = initialHex || '#f43f5e';
+      inp.oninput = () => onApply(inp.value);
+      inp.click();
     }
   }
 
@@ -1914,7 +2244,6 @@
       document.querySelectorAll('#studioPanelCollage .creative-subpanel').forEach(p => {
         p.classList.toggle('active', p.dataset.subpanel === sub);
       });
-      if (sub !== 'layout') closeCollagePhotoPicker();
     });
 
     document.getElementById('collageAutoFillBtn')?.addEventListener('click', () => autoFillEmptyCollageCells());
@@ -1923,6 +2252,31 @@
       else openCollagePhotoPicker();
     });
     document.getElementById('collagePickerCloseBtn')?.addEventListener('click', () => closeCollagePhotoPicker());
+    document.getElementById('collageDevicePickBtn')?.addEventListener('click', () => {
+      document.getElementById('collageDeviceFileInput')?.click();
+    });
+    document.getElementById('collageDeviceFileInput')?.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      e.target.value = '';
+      if (!files.length) return;
+      let slotIdx = clamp(cs.collage.selectedCell, 0, cs.collage.cells.length - 1);
+      for (const file of files) {
+        if (slotIdx >= cs.collage.cells.length) break;
+        const url = URL.createObjectURL(file);
+        try {
+          const img = await loadImageFromUrl(url);
+          cs.collage.cells[slotIdx] = makeCell(null, img, url);
+          const nextEmpty = cs.collage.cells.findIndex(c => !c.img);
+          slotIdx = nextEmpty >= 0 ? nextEmpty : slotIdx + 1;
+        } catch (_) {
+          URL.revokeObjectURL(url);
+        }
+      }
+      if (cs.collage.cells.every(c => !!c.img)) closeCollagePhotoPicker();
+      else cs.collage.selectedCell = Math.max(0, cs.collage.cells.findIndex(c => !c.img));
+      updateFloatingControls();
+      scheduleRender();
+    });
 
     // Collage Border Sliders + Output Quality Chips
     document.getElementById('collageSpacingSlider')?.addEventListener('input', (e) => {
@@ -2072,19 +2426,31 @@
     bindEnh('creativeEnhanceBrightenSlider', 'creativeEnhanceBrightenVal', 'brighten');
     bindEnh('creativeEnhanceGlowSlider', 'creativeEnhanceGlowVal', 'glow');
 
-    // Smart Remove Controls
+    // Smart Remove Controls (Picsart MI-GAN AI + Working Clear & Undo)
     document.getElementById('creativeRemoveSizeSlider')?.addEventListener('input', (e) => {
-      cs.remove.brushSize = parseInt(e.target.value, 10) || 28;
+      cs.remove.brushSize = parseInt(e.target.value, 10) || 30;
       const v = document.getElementById('creativeRemoveSizeVal'); if (v) v.textContent = `${cs.remove.brushSize}px`;
     });
-    document.getElementById('creativeRemoveApplyBtn')?.addEventListener('click', () => {
-      if (applySmartRemoveMask()) {
-        window.showToast?.('✨ Object removed cleanly!');
+    document.getElementById('creativeRemoveDownloadBtn')?.addEventListener('click', () => {
+      if (!hasNativeObjectRemove()) return;
+      if (cs.remove.modelStatus?.state === 'downloading') {
+        cs.remove.pendingRunAfterDownload = false;
+        window.AndroidApp.objectRemoveStopDownload?.();
       } else {
-        window.showToast?.('Brush over an area to remove first');
+        window.AndroidApp.objectRemoveDownload?.();
       }
+      refreshRemoveModelStatus();
+    });
+    document.getElementById('creativeRemoveApplyBtn')?.addEventListener('click', () => {
+      triggerObjectRemove();
     });
     document.getElementById('creativeRemoveUndoBtn')?.addEventListener('click', () => {
+      if (cs.remove.hasMask && cs.remove.maskCanvas) {
+        cs.remove.maskCanvas.getContext('2d').clearRect(0, 0, cs.remove.maskCanvas.width, cs.remove.maskCanvas.height);
+        cs.remove.hasMask = false;
+        scheduleRender();
+        return;
+      }
       if (cs.remove.undoStack.length && cs.workCanvas) {
         const prev = cs.remove.undoStack.pop();
         const ctx = cs.workCanvas.getContext('2d');
@@ -2092,14 +2458,29 @@
         ctx.drawImage(prev, 0, 0);
         cs.enhance.dirty = true;
         scheduleRender();
+        window.showToast?.('↶ Undid last removal');
       }
     });
     document.getElementById('creativeRemoveClearBtn')?.addEventListener('click', () => {
-      if (cs.remove.maskCanvas) {
+      let didClear = false;
+      if (cs.remove.hasMask && cs.remove.maskCanvas) {
         cs.remove.maskCanvas.getContext('2d').clearRect(0, 0, cs.remove.maskCanvas.width, cs.remove.maskCanvas.height);
         cs.remove.hasMask = false;
-        scheduleRender();
+        didClear = true;
       }
+      if (!didClear && cs.remove.undoStack.length && cs.workCanvas) {
+        const orig = cs.remove.undoStack[0];
+        const ctx = cs.workCanvas.getContext('2d');
+        ctx.clearRect(0, 0, cs.workCanvas.width, cs.workCanvas.height);
+        ctx.drawImage(orig, 0, 0);
+        cs.remove.undoStack = [];
+        cs.enhance.dirty = true;
+        didClear = true;
+        window.showToast?.('↺ Restored original photo');
+      } else if (didClear) {
+        window.showToast?.('Cleared brush selection');
+      }
+      scheduleRender();
     });
   }
 
@@ -2359,6 +2740,8 @@
           syncEnhanceUI();
         } else if (toolName === 'text' || toolName === 'stickers') {
           syncSelectedLayerUI();
+        } else if (toolName === 'remove') {
+          refreshRemoveModelStatus();
         }
         updateFloatingControls();
         scheduleRender();
@@ -2427,6 +2810,59 @@
     compositeOntoCanvas(canvas) {
       if (!hasAnyNonCollageEdits()) return;
       compositeCreativeOntoCanvas(canvas);
+    },
+
+    onRemoveModelStatus(status) {
+      if (status && typeof status === 'object') {
+        cs.remove.modelStatus = status;
+        updateRemoveAiBar();
+        if (status.state === 'ready' && cs.remove.pendingRunAfterDownload) {
+          cs.remove.pendingRunAfterDownload = false;
+          if (cs.activeTool === 'remove' && cs.remove.hasMask && !cs.remove.busy) {
+            runNativeMiganRemove();
+          }
+        } else if (status.state === 'error' && cs.remove.pendingRunAfterDownload) {
+          cs.remove.pendingRunAfterDownload = false;
+          window.showToast?.('AI download failed — using quick offline removal');
+          if (cs.activeTool === 'remove' && cs.remove.hasMask) applyExemplarFallbackRemove();
+        }
+      }
+    },
+
+    onRemoveResult(payload) {
+      if (!payload || payload.id !== cs.remove.activeReqId) return;
+      cs.remove.activeReqId = null;
+      cs.remove.busy = false;
+      const pendingSnap = cs.remove._pendingSnap;
+      cs.remove._pendingSnap = null;
+      updateRemoveAiBar();
+
+      if (payload.error || !payload.dataUrl) {
+        window.showToast?.(payload.error || 'AI removal failed — using fallback');
+        applyExemplarFallbackRemove();
+        return;
+      }
+
+      loadImageFromUrl(payload.dataUrl).then((img) => {
+        if (!cs.workCanvas) return;
+        if (pendingSnap) {
+          cs.remove.undoStack.push(pendingSnap);
+          if (cs.remove.undoStack.length > 6) cs.remove.undoStack.shift();
+        }
+        const ctx = cs.workCanvas.getContext('2d');
+        ctx.clearRect(0, 0, cs.workCanvas.width, cs.workCanvas.height);
+        ctx.drawImage(img, 0, 0, cs.workCanvas.width, cs.workCanvas.height);
+        if (cs.remove.maskCanvas) {
+          cs.remove.maskCanvas.getContext('2d').clearRect(0, 0, cs.remove.maskCanvas.width, cs.remove.maskCanvas.height);
+        }
+        cs.remove.hasMask = false;
+        cs.enhance.dirty = true;
+        scheduleRender();
+        const ms = payload.timing?.inferenceMs;
+        window.showToast?.(ms ? `✨ Object removed with AI (${(ms / 1000).toFixed(1)}s)` : '✨ Object removed cleanly with AI!');
+      }).catch(() => {
+        window.showToast?.('Could not apply AI removal result');
+      });
     }
   };
 })();

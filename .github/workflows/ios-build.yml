@@ -28,13 +28,18 @@ jobs:
           else
             rsync -av --delete --exclude="*.apk" web/ ios/web/
           fi
-          mkdir -p ios/web/models/backdrop_precision
+          mkdir -p ios/web/models/backdrop_precision ios/web/models/object_remove
           if [ -f "app/src/main/assets/models/backdrop_precision/manifest.json" ]; then
             cp -f app/src/main/assets/models/backdrop_precision/manifest.json ios/web/models/backdrop_precision/manifest.json
           elif [ -f "models/backdrop_precision/manifest.json" ]; then
             cp -f models/backdrop_precision/manifest.json ios/web/models/backdrop_precision/manifest.json
           fi
-          ls -la ios/web ios/web/models/backdrop_precision
+          if [ -f "app/src/main/assets/models/object_remove/manifest.json" ]; then
+            cp -f app/src/main/assets/models/object_remove/manifest.json ios/web/models/object_remove/manifest.json
+          elif [ -f "models/object_remove/manifest.json" ]; then
+            cp -f models/object_remove/manifest.json ios/web/models/object_remove/manifest.json
+          fi
+          ls -la ios/web ios/web/models/backdrop_precision ios/web/models/object_remove
 
       - name: Fetch Official ONNX Runtime iOS XCFramework (NuGet 1.32.0)
         run: |

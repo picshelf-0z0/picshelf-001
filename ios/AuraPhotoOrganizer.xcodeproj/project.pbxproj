@@ -13,6 +13,7 @@
 		111111111111111111111118 /* AuraBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111117 /* AuraBridge.swift */; };
 		11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111A /* BackdropPrecisionManager.swift */; };
 		11111111111111111111111E /* OrtPrecisionBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111D /* OrtPrecisionBridge.m */; };
+		111111111111111111111127 /* ObjectRemoverManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111126 /* ObjectRemoverManager.swift */; };
 		111111111111111111111121 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111120 /* LaunchScreen.storyboard */; };
 		111111111111111111111123 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111122 /* Assets.xcassets */; };
 		111111111111111111111125 /* web in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111124 /* web */; };
@@ -38,6 +39,7 @@
 		11111111111111111111111C /* OrtPrecisionBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OrtPrecisionBridge.h; sourceTree = "<group>"; };
 		11111111111111111111111D /* OrtPrecisionBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OrtPrecisionBridge.m; sourceTree = "<group>"; };
 		11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "AuraPhotoOrganizer-Bridging-Header.h"; sourceTree = "<group>"; };
+		111111111111111111111126 /* ObjectRemoverManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectRemoverManager.swift; sourceTree = "<group>"; };
 		111111111111111111111119 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		111111111111111111111120 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		111111111111111111111122 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -103,6 +105,7 @@
 				11111111111111111111111C /* OrtPrecisionBridge.h */,
 				11111111111111111111111D /* OrtPrecisionBridge.m */,
 				11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */,
+				111111111111111111111126 /* ObjectRemoverManager.swift */,
 				111111111111111111111120 /* LaunchScreen.storyboard */,
 				111111111111111111111122 /* Assets.xcassets */,
 				111111111111111111111119 /* Info.plist */,
@@ -205,6 +208,7 @@
 				111111111111111111111118 /* AuraBridge.swift in Sources */,
 				11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */,
 				11111111111111111111111E /* OrtPrecisionBridge.m in Sources */,
+				111111111111111111111127 /* ObjectRemoverManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

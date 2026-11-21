@@ -22,6 +22,19 @@ NS_ASSUME_NONNULL_BEGIN
                                  size:(int)size
                                 error:(NSError * _Nullable * _Nullable)error;
 
+/// Runs Picsart AI Research MI-GAN `migan_pipeline_v2.onnx`:
+/// - `rgbCHW`: UINT8 `[1, 3, height, width]` RGB planar bytes
+/// - `maskCHW`: UINT8 `[1, 1, height, width]` (`255` = keep, `0` = remove)
+/// Returns UINT8 `[1, 3, height, width]` RGB planar bytes.
+- (nullable NSData *)runMiganInpaintRGB:(NSData *)rgbCHW
+                                   mask:(NSData *)maskCHW
+                                  width:(int)width
+                                 height:(int)height
+                              imageName:(NSString *)imageName
+                               maskName:(NSString *)maskName
+                             outputName:(NSString *)outputName
+                                  error:(NSError * _Nullable * _Nullable)error;
+
 /// Signals any in-flight `runFloatCHWInput:` call to abort promptly (matching Android's
 /// `OrtSession.RunOptions.setTerminate(true)`).
 - (void)terminateActiveRun;

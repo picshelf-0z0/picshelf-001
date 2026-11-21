@@ -1351,6 +1351,7 @@ function openCustomColorPickerModal({ initialColor, onApply, onApplyName }) {
   if (modal) modal.style.display = 'flex';
 }
 
+window.openCustomColorPickerModal = openCustomColorPickerModal;
 function closeCustomColorPickerModal() {
   const modal = document.getElementById('customColorPickerModal');
   if (modal) modal.style.display = 'none';

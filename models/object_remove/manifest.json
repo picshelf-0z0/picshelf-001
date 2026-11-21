@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "model": "migan_pipeline_v2",
+  "baseUrl": "https://github.com/picshelf-0z0/picshelf-001/releases/download/inpaint-migan-v1/",
+  "bytes": 28079181,
+  "sha256": "6f1f3530a1a2324b19752018ce756088b07973cda8d7d890034ace5c8a48c40b",
+  "maxDim": 1080,
+  "inputs": {
+    "image": "image",
+    "mask": "mask"
+  },
+  "output": "result",
+  "parts": [
+    {
+      "name": "inpaint-migan-v1.part00.bin",
+      "bytes": 9500000,
+      "sha256": "ae8eb7ebed0dce137a4df45530e0f070c7718970a5b22e2651606eb17cc93c27"
+    },
+    {
+      "name": "inpaint-migan-v1.part01.bin",
+      "bytes": 9500000,
+      "sha256": "24da2334a124db2ac83b43b7d36a208f85b1a3f0b11349f2c8fb89c368af9789"
+    },
+    {
+      "name": "inpaint-migan-v1.part02.bin",
+      "bytes": 9079181,
+      "sha256": "9370534e26e7544b0f38d1eefde5c4ba76462a1fc29e6349987791b693c2431f"
+    }
+  ]
+}

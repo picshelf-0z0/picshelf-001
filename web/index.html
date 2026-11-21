@@ -2089,19 +2089,25 @@
                   <button type="button" class="studio-subnav-btn" data-sub="border"><i class="fa-solid fa-border-all"></i> Border</button>
                 </div>
 
+                <!-- Always-Accessible 1M+ Virtualized Collage Photo Picker (works from ANY sub-tab!) -->
+                <div class="collage-picker-wrap" id="collagePickerWrap">
+                  <div class="collage-picker-header">
+                    <span id="collagePickerTitle">Pick photo for Slot 1</span>
+                    <div class="creative-inline-row" style="gap:5px;">
+                      <button type="button" class="creative-pill-btn" id="collageDevicePickBtn" style="padding:3px 8px;font-size:10px;"><i class="fa-solid fa-folder-open"></i> Device</button>
+                      <button type="button" class="creative-pill-btn" id="collagePickerCloseBtn" style="padding:3px 8px;font-size:10px;">Done</button>
+                    </div>
+                  </div>
+                  <div class="collage-picker-rail" id="collagePickerRail"></div>
+                  <input type="file" id="collageDeviceFileInput" accept="image/*" multiple style="display:none;">
+                </div>
+
                 <!-- Subpanel: Layout & Photo Picker -->
                 <div class="creative-subpanel active" data-subpanel="layout">
                   <div class="creative-rail" id="collageLayoutsRail"></div>
                   <div class="creative-inline-row">
-                    <button type="button" class="creative-pill-btn" id="collagePickPhotoBtn"><i class="fa-solid fa-images"></i> Pick Slot Photo</button>
+                    <button type="button" class="creative-pill-btn" id="collagePickPhotoBtn"><i class="fa-solid fa-images"></i> Add / Pick Photo</button>
                     <button type="button" class="creative-pill-btn" id="collageAutoFillBtn"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto-Fill</button>
-                  </div>
-                  <div class="collage-picker-wrap" id="collagePickerWrap">
-                    <div class="collage-picker-header">
-                      <span id="collagePickerTitle">Pick photo for Slot 1</span>
-                      <button type="button" class="creative-pill-btn" id="collagePickerCloseBtn" style="padding:2px 8px;font-size:10px;">Done</button>
-                    </div>
-                    <div class="collage-picker-rail" id="collagePickerRail"></div>
                   </div>
                 </div>
 
@@ -2258,17 +2264,21 @@
               </div>
             </div>
 
-            <!-- Tool Panel: Smart Object Remove -->
+            <!-- Tool Panel: Smart Object Remove (Picsart MI-GAN AI On-Demand) -->
             <div class="studio-tool-panel" id="studioPanelRemove" style="display: none;">
               <div class="creative-panel-body">
-                <div class="creative-hint-line">
-                  <span>Brush over any spot, wire, or object to erase it seamlessly</span>
+                <div class="creative-remove-ai-bar" id="creativeRemoveAiBar">
+                  <span class="creative-remove-ai-status" id="creativeRemoveAiStatus"><i class="fa-solid fa-wand-magic-sparkles"></i> Brush object, then tap Remove</span>
+                  <button type="button" class="creative-pill-btn" id="creativeRemoveDownloadBtn" style="display:none;padding:4px 9px;font-size:10px;"><i class="fa-solid fa-cloud-arrow-down"></i> Download AI (28 MB)</button>
+                </div>
+                <div class="creative-remove-progress" id="creativeRemoveProgress" style="display:none;">
+                  <div class="creative-remove-progress-fill" id="creativeRemoveProgressFill"></div>
                 </div>
                 <div class="studio-slider-row">
                   <span class="studio-slider-label"><i class="fa-solid fa-eraser"></i> Brush Size</span>
-                  <span class="studio-slider-value" id="creativeRemoveSizeVal">28px</span>
+                  <span class="studio-slider-value" id="creativeRemoveSizeVal">30px</span>
                 </div>
-                <input type="range" class="studio-slider" id="creativeRemoveSizeSlider" min="8" max="76" value="28">
+                <input type="range" class="studio-slider" id="creativeRemoveSizeSlider" min="8" max="80" value="30">
                 <div class="creative-inline-row">
                   <button type="button" class="creative-primary-btn" id="creativeRemoveApplyBtn"><i class="fa-solid fa-wand-magic-sparkles"></i> Remove</button>
                   <button type="button" class="creative-pill-btn" id="creativeRemoveUndoBtn"><i class="fa-solid fa-rotate-left"></i> Undo</button>

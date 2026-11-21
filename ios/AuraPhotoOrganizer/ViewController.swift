@@ -2306,6 +2306,21 @@ The media/ folder inside also holds your original files directly if you ever ope
             PicShelfBackdropPrecisionManager.shared.segment(requestId: reqId, imageBase64: img)
             return boolResp(true)
 
+        case "object-remove-available":
+            return boolResp(PicShelfObjectRemoverManager.shared.isAvailable())
+
+        case "object-remove-status":
+            return jsonResp(PicShelfObjectRemoverManager.shared.modelStatusJson())
+
+        case "object-remove-inpaint":
+            let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            let reqId = obj["id"] as? String ?? ""
+            let img = obj["image"] as? String ?? ""
+            let mask = obj["mask"] as? String ?? ""
+            guard !reqId.isEmpty, !img.isEmpty, !mask.isEmpty else { return boolResp(false) }
+            PicShelfObjectRemoverManager.shared.inpaint(requestId: reqId, imageBase64: img, maskBase64: mask)
+            return boolResp(true)
+
         default:
             return (404, "application/json", Data("{\"ok\":false,\"error\":\"unknown\"}".utf8))
         }
@@ -5037,6 +5052,37 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                         }
                     });
                 },
+                objectRemoveAvailable: function() {
+                    try {
+                        var live = backupSyncRequest('GET', 'object-remove-available', null);
+                        if (live !== null) return !!JSON.parse(live).ok;
+                    } catch (_) {}
+                    return false;
+                },
+                objectRemoveModelStatus: function() {
+                    var live = backupSyncRequest('GET', 'object-remove-status', null);
+                    return live !== null ? live : '{"state":"missing","downloaded":0,"total":0,"error":null}';
+                },
+                objectRemoveDownload: function() {
+                    send('objectRemoveDownload');
+                },
+                objectRemoveStopDownload: function() {
+                    send('objectRemoveStopDownload');
+                },
+                objectRemoveCancel: function(requestId) {
+                    send('objectRemoveCancel', { requestId: String(requestId || '') });
+                },
+                objectRemoveInpaint: function(requestId, imageBase64, maskBase64) {
+                    backupPost('object-remove-inpaint', JSON.stringify({
+                        id: String(requestId || ''),
+                        image: String(imageBase64 || ''),
+                        mask: String(maskBase64 || '')
+                    }), true).catch(function() {
+                        if (window.PicShelfCreativeStudio && window.PicShelfCreativeStudio.onRemoveResult) {
+                            window.PicShelfCreativeStudio.onRemoveResult({ id: String(requestId || ''), error: 'AI eraser request failed' });
+                        }
+                    });
+                },
                 downloadPhoto: function(dataUrl, name) { send('downloadPhoto', { dataUrl: dataUrl, name: name }); },
                 executeDownloadBatch: function(batchJson) {
                     try {
@@ -5118,6 +5164,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         bridge.webView = webView
         PicShelfBackupManager.shared.webView = webView
         PicShelfBackdropPrecisionManager.shared.webView = webView
+        PicShelfObjectRemoverManager.shared.webView = webView
         PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
         webView.navigationDelegate = self
         webView.uiDelegate = self
