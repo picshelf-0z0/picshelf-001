@@ -2224,42 +2224,94 @@
               </div>
             </div>
 
-            <!-- Tool Panel: Enhance & Retouch -->
+            <!-- Tool Panel: Enhance & Selfie Retouch Studio -->
             <div class="studio-tool-panel" id="studioPanelEnhance" style="display: none;">
               <div class="creative-panel-body">
                 <div class="studio-subnav-pills" id="studioEnhanceSubnav">
-                  <button type="button" class="studio-subnav-btn active" data-sub="preset"><i class="fa-solid fa-wand-sparkles"></i> AI Enhance</button>
-                  <button type="button" class="studio-subnav-btn" data-sub="retouch"><i class="fa-solid fa-face-smile"></i> Portrait Retouch</button>
+                  <button type="button" class="studio-subnav-btn active" data-sub="preset"><i class="fa-solid fa-wand-sparkles"></i> Enhance</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="skin"><i class="fa-solid fa-droplet"></i> Skin</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="face"><i class="fa-solid fa-eye"></i> Face &amp; Eyes</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="makeup"><i class="fa-solid fa-heart"></i> Makeup</button>
                 </div>
+
+                <!-- Subpanel 1: AI Enhance & Instant Perfect Selfie Presets -->
                 <div class="creative-subpanel active" data-subpanel="preset">
                   <div class="creative-rail" id="creativeEnhancePresets">
                     <button type="button" class="creative-pill-btn" data-preset="original">Original</button>
+                    <button type="button" class="creative-pill-btn" data-preset="selfie"><i class="fa-solid fa-face-smile-beam"></i> Perfect Selfie ✨</button>
                     <button type="button" class="creative-pill-btn active" data-preset="hd"><i class="fa-solid fa-sparkles"></i> HD Clarity</button>
                     <button type="button" class="creative-pill-btn" data-preset="2x"><i class="fa-solid fa-bolt"></i> 2X Crisp</button>
                     <button type="button" class="creative-pill-btn" data-preset="vivid"><i class="fa-solid fa-sun"></i> Vivid Pop</button>
-                    <button type="button" class="creative-pill-btn" data-preset="portrait"><i class="fa-solid fa-face-smile"></i> Selfie Glow</button>
+                    <button type="button" class="creative-pill-btn" data-preset="portrait"><i class="fa-solid fa-wand-magic-sparkles"></i> Porcelain Glow</button>
                   </div>
-                  <div class="creative-hint-line"><span>Drag the Before / After divider on the photo to compare</span></div>
+                  <div class="creative-hint-line"><span id="creativeFaceStatusHint">Drag the Before / After divider on the photo to compare</span></div>
                 </div>
-                <div class="creative-subpanel" data-subpanel="retouch">
+
+                <!-- Subpanel 2: Frequency-Separation Skin Perfection -->
+                <div class="creative-subpanel" data-subpanel="skin">
                   <div class="creative-slider-grid">
-                    <div class="creative-slider-cell">
-                      <div class="studio-slider-row"><span>Clarity</span><span id="creativeEnhanceClarityVal">0%</span></div>
-                      <input type="range" class="studio-slider" id="creativeEnhanceClaritySlider" min="0" max="100" value="0">
-                    </div>
                     <div class="creative-slider-cell">
                       <div class="studio-slider-row"><span>Smooth Skin</span><span id="creativeEnhanceSmoothVal">0%</span></div>
                       <input type="range" class="studio-slider" id="creativeEnhanceSmoothSlider" min="0" max="100" value="0">
                     </div>
                     <div class="creative-slider-cell">
-                      <div class="studio-slider-row"><span>Brighten</span><span id="creativeEnhanceBrightenVal">0%</span></div>
-                      <input type="range" class="studio-slider" id="creativeEnhanceBrightenSlider" min="0" max="100" value="0">
+                      <div class="studio-slider-row"><span>Blemish &amp; Spots</span><span id="creativeEnhanceBlemishVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceBlemishSlider" min="0" max="100" value="0">
                     </div>
                     <div class="creative-slider-cell">
-                      <div class="studio-slider-row"><span>Warm Glow</span><span id="creativeEnhanceGlowVal">0%</span></div>
-                      <input type="range" class="studio-slider" id="creativeEnhanceGlowSlider" min="0" max="100" value="0">
+                      <div class="studio-slider-row"><span>Wrinkles</span><span id="creativeEnhanceWrinkleVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceWrinkleSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Skin Texture</span><span id="creativeEnhanceTextureVal">0</span></div>
+                      <input type="range" class="studio-slider bi-slider" id="creativeEnhanceTextureSlider" min="-50" max="50" value="0">
                     </div>
                   </div>
+                </div>
+
+                <!-- Subpanel 3: Face, Eyes, Under-Eye & Glow -->
+                <div class="creative-subpanel" data-subpanel="face">
+                  <div class="creative-slider-grid">
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Dark Circles</span><span id="creativeEnhanceUnderEyeVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceUnderEyeSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Eye Brighten</span><span id="creativeEnhanceEyesVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceEyesSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Teeth Whiten</span><span id="creativeEnhanceTeethVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceTeethSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Radiant Glow</span><span id="creativeEnhanceGlowVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceGlowSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Clarity</span><span id="creativeEnhanceClarityVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceClaritySlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Skin Brighten</span><span id="creativeEnhanceBrightenVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceBrightenSlider" min="0" max="100" value="0">
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Subpanel 4: Natural Cheek Blush/Glow & Lip Tint/Gloss -->
+                <div class="creative-subpanel" data-subpanel="makeup">
+                  <div class="creative-slider-grid">
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Cheek Glow &amp; Blush</span><span id="creativeEnhanceCheekVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceCheekSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Lip Tint &amp; Gloss</span><span id="creativeEnhanceLipVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceLipSlider" min="0" max="100" value="0">
+                    </div>
+                  </div>
+                  <div class="creative-rail" id="creativeMakeupColorsRail"></div>
                 </div>
               </div>
             </div>

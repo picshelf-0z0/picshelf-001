@@ -14,6 +14,7 @@
 		11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111A /* BackdropPrecisionManager.swift */; };
 		11111111111111111111111E /* OrtPrecisionBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 11111111111111111111111D /* OrtPrecisionBridge.m */; };
 		111111111111111111111127 /* ObjectRemoverManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111126 /* ObjectRemoverManager.swift */; };
+		111111111111111111111129 /* FaceRetouchDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111128 /* FaceRetouchDetector.swift */; };
 		111111111111111111111121 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111120 /* LaunchScreen.storyboard */; };
 		111111111111111111111123 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111122 /* Assets.xcassets */; };
 		111111111111111111111125 /* web in Resources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111124 /* web */; };
@@ -26,6 +27,7 @@
 		111111111111111111111144 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111143 /* AVFoundation.framework */; };
 		111111111111111111111146 /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111145 /* CoreML.framework */; };
 		111111111111111111111148 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111147 /* Accelerate.framework */; };
+		11111111111111111111114C /* Vision.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11111111111111111111114B /* Vision.framework */; };
 		11111111111111111111114A /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 111111111111111111111149 /* onnxruntime.xcframework */; };
 /* End PBXBuildFile section */
 
@@ -40,6 +42,7 @@
 		11111111111111111111111D /* OrtPrecisionBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OrtPrecisionBridge.m; sourceTree = "<group>"; };
 		11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "AuraPhotoOrganizer-Bridging-Header.h"; sourceTree = "<group>"; };
 		111111111111111111111126 /* ObjectRemoverManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectRemoverManager.swift; sourceTree = "<group>"; };
+		111111111111111111111128 /* FaceRetouchDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceRetouchDetector.swift; sourceTree = "<group>"; };
 		111111111111111111111119 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		111111111111111111111120 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		111111111111111111111122 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -53,6 +56,7 @@
 		111111111111111111111143 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		111111111111111111111145 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };
 		111111111111111111111147 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
+		11111111111111111111114B /* Vision.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Vision.framework; path = System/Library/Frameworks/Vision.framework; sourceTree = SDKROOT; };
 		111111111111111111111149 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = onnxruntime.xcframework; path = Frameworks/onnxruntime.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -70,6 +74,7 @@
 				111111111111111111111144 /* AVFoundation.framework in Frameworks */,
 				111111111111111111111146 /* CoreML.framework in Frameworks */,
 				111111111111111111111148 /* Accelerate.framework in Frameworks */,
+				11111111111111111111114C /* Vision.framework in Frameworks */,
 				11111111111111111111114A /* onnxruntime.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -106,6 +111,7 @@
 				11111111111111111111111D /* OrtPrecisionBridge.m */,
 				11111111111111111111111F /* AuraPhotoOrganizer-Bridging-Header.h */,
 				111111111111111111111126 /* ObjectRemoverManager.swift */,
+				111111111111111111111128 /* FaceRetouchDetector.swift */,
 				111111111111111111111120 /* LaunchScreen.storyboard */,
 				111111111111111111111122 /* Assets.xcassets */,
 				111111111111111111111119 /* Info.plist */,
@@ -126,6 +132,7 @@
 				111111111111111111111143 /* AVFoundation.framework */,
 				111111111111111111111145 /* CoreML.framework */,
 				111111111111111111111147 /* Accelerate.framework */,
+				11111111111111111111114B /* Vision.framework */,
 				111111111111111111111149 /* onnxruntime.xcframework */,
 			);
 			name = Frameworks;
@@ -209,6 +216,7 @@
 				11111111111111111111111B /* BackdropPrecisionManager.swift in Sources */,
 				11111111111111111111111E /* OrtPrecisionBridge.m in Sources */,
 				111111111111111111111127 /* ObjectRemoverManager.swift in Sources */,
+				111111111111111111111129 /* FaceRetouchDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

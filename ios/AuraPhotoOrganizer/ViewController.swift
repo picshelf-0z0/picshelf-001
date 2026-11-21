@@ -2321,6 +2321,14 @@ The media/ folder inside also holds your original files directly if you ever ope
             PicShelfObjectRemoverManager.shared.inpaint(requestId: reqId, imageBase64: img, maskBase64: mask)
             return boolResp(true)
 
+        case "face-landmarks":
+            let obj = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+            let reqId = obj["id"] as? String ?? ""
+            let img = obj["image"] as? String ?? ""
+            guard !reqId.isEmpty, !img.isEmpty else { return boolResp(false) }
+            PicShelfFaceRetouchDetector.shared.detect(requestId: reqId, imageBase64: img)
+            return boolResp(true)
+
         default:
             return (404, "application/json", Data("{\"ok\":false,\"error\":\"unknown\"}".utf8))
         }
@@ -5083,6 +5091,16 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                         }
                     });
                 },
+                detectFaceLandmarks: function(requestId, imageBase64) {
+                    backupPost('face-landmarks', JSON.stringify({
+                        id: String(requestId || ''),
+                        image: String(imageBase64 || '')
+                    }), true).catch(function() {
+                        if (window.PicShelfCreativeStudio && window.PicShelfCreativeStudio.onFaceLandmarks) {
+                            window.PicShelfCreativeStudio.onFaceLandmarks({ id: String(requestId || ''), faces: [] });
+                        }
+                    });
+                },
                 downloadPhoto: function(dataUrl, name) { send('downloadPhoto', { dataUrl: dataUrl, name: name }); },
                 executeDownloadBatch: function(batchJson) {
                     try {
@@ -5165,6 +5183,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         PicShelfBackupManager.shared.webView = webView
         PicShelfBackdropPrecisionManager.shared.webView = webView
         PicShelfObjectRemoverManager.shared.webView = webView
+        PicShelfFaceRetouchDetector.shared.webView = webView
         PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
         webView.navigationDelegate = self
         webView.uiDelegate = self
