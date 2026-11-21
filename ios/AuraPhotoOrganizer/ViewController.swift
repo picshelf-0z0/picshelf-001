@@ -571,7 +571,507 @@ final class PicShelfMediaStore {
     }
 }
 
-// MARK: - Safe WKURLSchemeTask Stop-Guarded Dispatcher
+// MARK: - Loopback HTTP/1.1 Range Streaming Media Server (Zero-Deadlock, Kernel TCP Backpressure for 24h+ Videos & 1M+ Libraries)
+
+final class PicShelfLocalMediaServer {
+    static let shared = PicShelfLocalMediaServer()
+
+    private let stateLock = NSLock()
+    private var listenFd: Int32 = -1
+    private var isRunning = false
+    private(set) var port: UInt16 = 0
+    let secretPath: String = "ps-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+
+    private let acceptQueue = DispatchQueue(label: "com.picshelf.ios.http.accept", qos: .userInitiated)
+    private let clientQueue = DispatchQueue(label: "com.picshelf.ios.http.clients", qos: .userInitiated, attributes: .concurrent)
+
+    var originalsOrigin: String? {
+        guard port > 0 else { return nil }
+        return "http://127.0.0.1:\(port)/\(secretPath)/originals/"
+    }
+
+    var thumbnailsOrigin: String? {
+        guard port > 0 else { return nil }
+        return "http://127.0.0.1:\(port)/\(secretPath)/thumbs/"
+    }
+
+    func start() {
+        ensureRunning()
+    }
+
+    func ensureRunning() {
+        stateLock.lock()
+        if isRunning && listenFd >= 0 {
+            var sockErr: Int32 = 0
+            var errLen = socklen_t(MemoryLayout<Int32>.size)
+            let ok = Darwin.getsockopt(listenFd, SOL_SOCKET, SO_ERROR, &sockErr, &errLen) == 0 && sockErr == 0
+            if ok {
+                stateLock.unlock()
+                return
+            }
+            Darwin.close(listenFd)
+            listenFd = -1
+            isRunning = false
+        }
+
+        let desiredPort = self.port
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            stateLock.unlock()
+            return
+        }
+
+        var one: Int32 = 1
+        Darwin.setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
+        Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = desiredPort.bigEndian
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        var bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bindRes != 0 && desiredPort != 0 {
+            // Fallback to ephemeral port if previous port is temporarily in TIME_WAIT
+            addr.sin_port = 0
+            bindRes = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        guard bindRes == 0, Darwin.listen(fd, 64) == 0 else {
+            Darwin.close(fd)
+            stateLock.unlock()
+            return
+        }
+
+        var boundAddr = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameRes = withUnsafeMutablePointer(to: &boundAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.getsockname(fd, $0, &boundLen)
+            }
+        }
+        guard nameRes == 0 else {
+            Darwin.close(fd)
+            stateLock.unlock()
+            return
+        }
+
+        self.port = UInt16(bigEndian: boundAddr.sin_port)
+        self.listenFd = fd
+        self.isRunning = true
+        stateLock.unlock()
+
+        acceptQueue.async { [weak self] in
+            self?.acceptLoop(serverFd: fd)
+        }
+    }
+
+    private func acceptLoop(serverFd: Int32) {
+        while true {
+            var clientAddr = sockaddr_in()
+            var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let clientFd = withUnsafeMutablePointer(to: &clientAddr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.accept(serverFd, $0, &clientLen)
+                }
+            }
+            if clientFd < 0 {
+                if errno == EINTR { continue }
+                stateLock.lock()
+                if self.listenFd == serverFd {
+                    Darwin.close(serverFd)
+                    self.listenFd = -1
+                    self.isRunning = false
+                }
+                stateLock.unlock()
+                break
+            }
+            clientQueue.async { [weak self] in
+                self?.handleClient(clientFd)
+            }
+        }
+    }
+
+    private func handleClient(_ fd: Int32) {
+        defer { Darwin.close(fd) }
+
+        var one: Int32 = 1
+        Darwin.setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        var rcvTv = timeval(tv_sec: 10, tv_usec: 0)
+        Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvTv, socklen_t(MemoryLayout<timeval>.size))
+        var sndTv = timeval(tv_sec: 30, tv_usec: 0)
+        Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndTv, socklen_t(MemoryLayout<timeval>.size))
+
+        // Read HTTP request headers up to 16 KB
+        var reqData = Data()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let headerDelim = Data("\r\n\r\n".utf8)
+        while reqData.count < 16384 {
+            let n = Darwin.recv(fd, &buf, buf.count, 0)
+            if n <= 0 { break }
+            reqData.append(buf, count: n)
+            if reqData.range(of: headerDelim) != nil { break }
+        }
+        guard !reqData.isEmpty, let headerStr = String(data: reqData, encoding: .utf8) else { return }
+
+        let lines = headerStr.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else { return }
+        let reqParts = requestLine.split(separator: " ")
+        guard reqParts.count >= 2 else { return }
+
+        let httpMethod = String(reqParts[0]).uppercased()
+        let rawTarget = String(reqParts[1])
+
+        var headersMap: [String: String] = [:]
+        for line in lines.dropFirst() {
+            if line.isEmpty { break }
+            if let colon = line.firstIndex(of: ":") {
+                let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                headersMap[k] = v
+            }
+        }
+
+        if httpMethod == "OPTIONS" {
+            let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: Range, Content-Type\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n"
+            _ = writeAll(fd, Data(resp.utf8))
+            return
+        }
+
+        guard httpMethod == "GET" || httpMethod == "HEAD" else {
+            sendSimpleError(fd, code: 405, reason: "Method Not Allowed")
+            return
+        }
+
+        guard let fullURL = URL(string: "http://127.0.0.1\(rawTarget)") else {
+            sendSimpleError(fd, code: 400, reason: "Bad Request")
+            return
+        }
+
+        let comps = fullURL.pathComponents.filter { $0 != "/" }
+        // Expected: [secretPath, "originals"|"thumbs", token, kind/mode, offset, size, method]
+        guard comps.count >= 7, comps[0] == secretPath else {
+            sendSimpleError(fd, code: 403, reason: "Forbidden")
+            return
+        }
+
+        let route = comps[1]
+        guard let token = comps[2].removingPercentEncoding,
+              let offset = UInt64(comps[4]),
+              let size = UInt64(comps[5]),
+              let method = Int(comps[6]),
+              let srcURL = PicShelfMediaStore.shared.sourceURL(for: token),
+              FileManager.default.fileExists(atPath: srcURL.path) else {
+            sendSimpleError(fd, code: 404, reason: "Not Found")
+            return
+        }
+
+        let modeOrKind = comps[3].lowercased()
+        let urlComps = URLComponents(url: fullURL, resolvingAgainstBaseURL: false)
+        let isHead = (httpMethod == "HEAD")
+
+        if route == "originals" {
+            let mime = urlComps?.queryItems?.first(where: { $0.name == "type" })?.value ?? PicShelfMediaStore.mimeType(for: token)
+            serveOriginal(fd: fd, fileURL: srcURL, token: token, kind: modeOrKind, offset: offset, size: size, method: method, mime: mime, rangeHeader: headersMap["range"], isHead: isHead)
+        } else if route == "thumbs" {
+            serveThumbnailOrMeta(fd: fd, fileURL: srcURL, token: token, mode: modeOrKind, offset: offset, size: size, method: method, urlComps: urlComps, isHead: isHead)
+        } else {
+            sendSimpleError(fd, code: 404, reason: "Not Found")
+        }
+    }
+
+    private func serveOriginal(fd: Int32, fileURL: URL, token: String, kind: String, offset: UInt64, size: UInt64, method: Int, mime: String, rangeHeader: String?, isHead: Bool) {
+        if kind == "zip" && method == 8 {
+            guard let inflated = PicShelfMediaStore.shared.extractEntryToData(sourceId: token, kind: "zip", offset: offset, size: size, method: 8, maxBytes: 256 * 1024 * 1024) else {
+                sendSimpleError(fd, code: 500, reason: "Decode Failed")
+                return
+            }
+            serveInMemoryRange(fd: fd, data: inflated, mime: mime, rangeHeader: rangeHeader, isHead: isHead)
+            return
+        }
+
+        guard let fh = try? FileHandle(forReadingFrom: fileURL) else {
+            sendSimpleError(fd, code: 500, reason: "Open Failed")
+            return
+        }
+        defer { try? fh.close() }
+
+        var dataStart = offset
+        if kind == "zip" {
+            guard let resolved = PicShelfMediaStore.shared.resolveZipDataOffset(fileHandle: fh, localOffset: offset) else {
+                sendSimpleError(fd, code: 500, reason: "Invalid ZIP")
+                return
+            }
+            dataStart = resolved
+        }
+
+        let totalLength = size
+        var reqStart: UInt64 = 0
+        var reqEnd: UInt64 = totalLength > 0 ? totalLength - 1 : 0
+        var isRange = false
+        if let rh = rangeHeader {
+            if let parsed = parseByteRange(rh, totalLength: totalLength) {
+                reqStart = parsed.start
+                reqEnd = parsed.end
+                isRange = true
+            } else {
+                let err = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(totalLength)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                _ = writeAll(fd, Data(err.utf8))
+                return
+            }
+        }
+
+        let contentLength = totalLength > 0 ? (reqEnd - reqStart + 1) : 0
+        var headerText = isRange ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n"
+        headerText += "Content-Type: \(mime)\r\n"
+        headerText += "Content-Length: \(contentLength)\r\n"
+        headerText += "Accept-Ranges: bytes\r\n"
+        if isRange {
+            headerText += "Content-Range: bytes \(reqStart)-\(reqEnd)/\(totalLength)\r\n"
+        }
+        headerText += "Access-Control-Allow-Origin: *\r\n"
+        headerText += "Access-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length\r\n"
+        headerText += "Cache-Control: private, max-age=3600\r\n"
+        headerText += "Connection: close\r\n\r\n"
+
+        guard writeAll(fd, Data(headerText.utf8)) else { return }
+        if isHead || contentLength == 0 { return }
+
+        do {
+            try fh.seek(toOffset: dataStart + reqStart)
+            var remaining = contentLength
+            let chunkBytes: UInt64 = 65536 // 64 KB chunks for instant cancel & constant low RAM even on 24h videos
+            while remaining > 0 {
+                let toRead = Int(min(remaining, chunkBytes))
+                guard let chunk = try fh.read(upToCount: toRead), !chunk.isEmpty else { break }
+                if !writeAll(fd, chunk) { return } // Client closed / seeked -> exit immediately
+                remaining -= UInt64(chunk.count)
+            }
+        } catch {
+            return
+        }
+    }
+
+    private func serveInMemoryRange(fd: Int32, data: Data, mime: String, rangeHeader: String?, isHead: Bool) {
+        let total = UInt64(data.count)
+        var start: UInt64 = 0
+        var end: UInt64 = total > 0 ? total - 1 : 0
+        var isRange = false
+        if let rh = rangeHeader, let parsed = parseByteRange(rh, totalLength: total) {
+            start = parsed.start
+            end = parsed.end
+            isRange = true
+        }
+        let sliceLen = total > 0 ? (end - start + 1) : 0
+        var headerText = isRange ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n"
+        headerText += "Content-Type: \(mime)\r\n"
+        headerText += "Content-Length: \(sliceLen)\r\n"
+        headerText += "Accept-Ranges: bytes\r\n"
+        if isRange {
+            headerText += "Content-Range: bytes \(start)-\(end)/\(total)\r\n"
+        }
+        headerText += "Access-Control-Allow-Origin: *\r\n"
+        headerText += "Access-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length\r\n"
+        headerText += "Cache-Control: private, max-age=3600\r\n"
+        headerText += "Connection: close\r\n\r\n"
+        guard writeAll(fd, Data(headerText.utf8)) else { return }
+        if isHead || sliceLen == 0 { return }
+        let slice = data.subdata(in: Int(start)..<Int(end + 1))
+        _ = writeAll(fd, slice)
+    }
+
+    private func serveThumbnailOrMeta(fd: Int32, fileURL: URL, token: String, mode: String, offset: UInt64, size: UInt64, method: Int, urlComps: URLComponents?, isHead: Bool) {
+        func sendBytes(_ data: Data, mime: String) {
+            let header = "HTTP/1.1 200 OK\r\nContent-Type: \(mime)\r\nContent-Length: \(data.count)\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n"
+            guard writeAll(fd, Data(header.utf8)) else { return }
+            if !isHead && !data.isEmpty { _ = writeAll(fd, data) }
+        }
+        func sendJSON(_ obj: [String: Any]) {
+            guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []) else {
+                sendSimpleError(fd, code: 500, reason: "JSON Error")
+                return
+            }
+            sendBytes(data, mime: "application/json")
+        }
+
+        if mode == "video-tar" || mode == "video-zip" {
+            let kind = mode == "video-zip" ? "zip" : "tar"
+            let ext = (token as NSString).pathExtension.isEmpty ? "mp4" : (token as NSString).pathExtension
+            guard let extracted = PicShelfMediaStore.shared.extractEntryToTempFile(sourceId: token, kind: kind, offset: offset, size: size, method: method, ext: ext) else {
+                sendSimpleError(fd, code: 404, reason: "Video Unavailable")
+                return
+            }
+            defer { if extracted.isTemporary { try? FileManager.default.removeItem(at: extracted.url) } }
+            if let frame = PicShelfMediaStore.generateVideoFrame(from: extracted.url, timeSeconds: nil, maxDimension: 540) {
+                let poster = "data:image/jpeg;base64," + frame.jpeg.base64EncodedString()
+                sendJSON(["poster": poster, "duration": frame.duration, "width": frame.width, "height": frame.height])
+            } else {
+                let meta = PicShelfMediaStore.extractVideoMetadata(from: extracted.url, includeGps: false)
+                sendJSON(["duration": meta.duration])
+            }
+            return
+        }
+
+        if mode == "resize-frame-tar" || mode == "resize-frame-zip" {
+            let kind = mode == "resize-frame-zip" ? "zip" : "tar"
+            let ext = (token as NSString).pathExtension.isEmpty ? "mp4" : (token as NSString).pathExtension
+            let timeUsStr = urlComps?.queryItems?.first(where: { $0.name == "timeUs" })?.value ?? "0"
+            let timeSec = (Double(timeUsStr) ?? 0) / 1_000_000.0
+            guard let extracted = PicShelfMediaStore.shared.extractEntryToTempFile(sourceId: token, kind: kind, offset: offset, size: size, method: method, ext: ext) else {
+                sendSimpleError(fd, code: 404, reason: "Frame Unavailable")
+                return
+            }
+            defer { if extracted.isTemporary { try? FileManager.default.removeItem(at: extracted.url) } }
+            if let frame = PicShelfMediaStore.generateVideoFrame(from: extracted.url, timeSeconds: timeSec, maxDimension: 1280) {
+                let poster = "data:image/jpeg;base64," + frame.jpeg.base64EncodedString()
+                sendJSON(["poster": poster, "width": frame.width, "height": frame.height])
+            } else {
+                sendSimpleError(fd, code: 500, reason: "Frame Decode Failed")
+            }
+            return
+        }
+
+        if mode == "metadata-tar" || mode == "metadata-zip" {
+            let kind = mode == "metadata-zip" ? "zip" : "tar"
+            let mime = urlComps?.queryItems?.first(where: { $0.name == "type" })?.value ?? ""
+            if mime.hasPrefix("video/") || PicShelfMediaStore.mediaCategory(for: token) == "video" {
+                let ext = (token as NSString).pathExtension.isEmpty ? "mp4" : (token as NSString).pathExtension
+                if let extracted = PicShelfMediaStore.shared.extractEntryToTempFile(sourceId: token, kind: kind, offset: offset, size: size, method: method, ext: ext) {
+                    defer { if extracted.isTemporary { try? FileManager.default.removeItem(at: extracted.url) } }
+                    let vmeta = PicShelfMediaStore.extractVideoMetadata(from: extracted.url, includeGps: true)
+                    var res: [String: Any] = ["status": "ok"]
+                    if let loc = vmeta.location { res["location"] = loc }
+                    if let c = vmeta.createdAt { res["createdAt"] = c }
+                    if let m = vmeta.cameraModel { res["cameraModel"] = m }
+                    sendJSON(res)
+                    return
+                }
+            } else {
+                if let data = PicShelfMediaStore.shared.extractEntryToData(sourceId: token, kind: kind, offset: offset, size: size, method: method, maxBytes: 4 * 1024 * 1024),
+                   let src = CGImageSourceCreateWithData(data as CFData, nil) {
+                    let imeta = PicShelfMediaStore.extractImageMetadata(from: src, includeGps: true)
+                    var res: [String: Any] = ["status": "ok"]
+                    if let loc = imeta.location { res["location"] = loc }
+                    if let c = imeta.createdAt { res["createdAt"] = c }
+                    if let m = imeta.cameraModel { res["cameraModel"] = m }
+                    sendJSON(res)
+                    return
+                }
+            }
+            sendJSON(["status": "unsupported"])
+            return
+        }
+
+        // Image / PDF thumbnail (cached 512px JPEG)
+        let kind = (mode == "zip") ? "zip" : "tar"
+        let cacheName = "\(token)_\(kind)_\(offset)_\(size).jpg".replacingOccurrences(of: "/", with: "_")
+        let cacheURL = PicShelfMediaStore.shared.thumbsDir.appendingPathComponent(cacheName)
+        if let cached = try? Data(contentsOf: cacheURL), !cached.isEmpty {
+            sendBytes(cached, mime: "image/jpeg")
+            return
+        }
+
+        if kind == "tar" && offset == 0,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+           let fileSize = (attrs[.size] as? NSNumber)?.uint64Value,
+           fileSize == size {
+            if fileURL.pathExtension.lowercased() == "pdf" {
+                if let pdfJpeg = PicShelfMediaStore.renderPDFPage1JPEG(from: fileURL, maxWidth: 600) {
+                    try? pdfJpeg.write(to: cacheURL)
+                    sendBytes(pdfJpeg, mime: "image/jpeg")
+                    return
+                }
+            } else if let thumb = PicShelfMediaStore.generateImageThumbnailJPEG(from: fileURL, maxPixelSize: 512) {
+                try? thumb.write(to: cacheURL)
+                sendBytes(thumb, mime: "image/jpeg")
+                return
+            }
+        }
+
+        guard let data = PicShelfMediaStore.shared.extractEntryToData(sourceId: token, kind: kind, offset: offset, size: size, method: method, maxBytes: 48 * 1024 * 1024) else {
+            sendSimpleError(fd, code: 404, reason: "Thumb Unavailable")
+            return
+        }
+        if data.count >= 4 && data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46 {
+            let tmpPdf = FileManager.default.temporaryDirectory.appendingPathComponent("ps_pdf_\(UUID().uuidString).pdf")
+            try? data.write(to: tmpPdf)
+            defer { try? FileManager.default.removeItem(at: tmpPdf) }
+            if let pdfJpeg = PicShelfMediaStore.renderPDFPage1JPEG(from: tmpPdf, maxWidth: 600) {
+                try? pdfJpeg.write(to: cacheURL)
+                sendBytes(pdfJpeg, mime: "image/jpeg")
+                return
+            }
+        }
+        if let thumb = PicShelfMediaStore.generateImageThumbnailJPEG(from: data, maxPixelSize: 512) {
+            try? thumb.write(to: cacheURL)
+            sendBytes(thumb, mime: "image/jpeg")
+        } else {
+            sendBytes(data, mime: "image/jpeg")
+        }
+    }
+
+    private func parseByteRange(_ header: String, totalLength: UInt64) -> (start: UInt64, end: UInt64)? {
+        guard totalLength > 0 else { return nil }
+        let trimmed = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.lowercased().hasPrefix("bytes=") else { return nil }
+        let spec = String(trimmed.dropFirst(6)).split(separator: ",").first.map(String.init) ?? ""
+        let bounds = spec.split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count == 2 else { return nil }
+        let startStr = String(bounds[0]).trimmingCharacters(in: .whitespaces)
+        let endStr = String(bounds[1]).trimmingCharacters(in: .whitespaces)
+        if startStr.isEmpty {
+            guard let suffix = UInt64(endStr), suffix > 0 else { return nil }
+            let start = suffix >= totalLength ? 0 : (totalLength - suffix)
+            return (start, totalLength - 1)
+        }
+        guard let start = UInt64(startStr), start < totalLength else { return nil }
+        let end: UInt64
+        if endStr.isEmpty {
+            end = totalLength - 1
+        } else if let parsedEnd = UInt64(endStr) {
+            end = min(parsedEnd, totalLength - 1)
+        } else {
+            return nil
+        }
+        guard end >= start else { return nil }
+        return (start, end)
+    }
+
+    private func sendSimpleError(_ fd: Int32, code: Int, reason: String) {
+        let resp = "HTTP/1.1 \(code) \(reason)\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        _ = writeAll(fd, Data(resp.utf8))
+    }
+
+    private func writeAll(_ fd: Int32, _ data: Data) -> Bool {
+        if data.isEmpty { return true }
+        return data.withUnsafeBytes { rawBuf -> Bool in
+            guard let base = rawBuf.baseAddress else { return false }
+            var sentTotal = 0
+            let count = data.count
+            while sentTotal < count {
+                let n = Darwin.send(fd, base.advanced(by: sentTotal), count - sentTotal, 0)
+                if n > 0 {
+                    sentTotal += n
+                } else if n < 0 && errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+}
+
+// MARK: - Safe WKURLSchemeTask Stop-Guarded Dispatcher (Main-Thread Safe, Zero Deadlock)
 
 class SafeSchemeHandlerBase: NSObject, WKURLSchemeHandler {
     private let stateLock = NSLock()
@@ -596,38 +1096,48 @@ class SafeSchemeHandlerBase: NSObject, WKURLSchemeHandler {
         return stopped
     }
 
+    private func runOnMainIfActive(_ task: WKURLSchemeTask, markDone: Bool = false, _ block: @escaping () -> Void) -> Bool {
+        if Thread.isMainThread {
+            if isStopped(task) { return false }
+            if markDone {
+                stateLock.lock()
+                stoppedTasks.insert(ObjectIdentifier(task))
+                stateLock.unlock()
+            }
+            block()
+            return true
+        }
+        var executed = false
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { [weak self] in
+            defer { sem.signal() }
+            guard let self = self, !self.isStopped(task) else { return }
+            if markDone {
+                self.stateLock.lock()
+                self.stoppedTasks.insert(ObjectIdentifier(task))
+                self.stateLock.unlock()
+            }
+            block()
+            executed = true
+        }
+        _ = sem.wait(timeout: .now() + 5)
+        return executed
+    }
+
     func safeSendResponse(_ task: WKURLSchemeTask, response: URLResponse) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        if stoppedTasks.contains(ObjectIdentifier(task)) { return false }
-        task.didReceive(response)
-        return true
+        return runOnMainIfActive(task) { task.didReceive(response) }
     }
 
     func safeSendData(_ task: WKURLSchemeTask, data: Data) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        if stoppedTasks.contains(ObjectIdentifier(task)) { return false }
-        task.didReceive(data)
-        return true
+        return runOnMainIfActive(task) { task.didReceive(data) }
     }
 
     func safeFinish(_ task: WKURLSchemeTask) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let id = ObjectIdentifier(task)
-        if stoppedTasks.contains(id) { return }
-        stoppedTasks.insert(id)
-        task.didFinish()
+        _ = runOnMainIfActive(task, markDone: true) { task.didFinish() }
     }
 
     func safeFail(_ task: WKURLSchemeTask, error: Error) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let id = ObjectIdentifier(task)
-        if stoppedTasks.contains(id) { return }
-        stoppedTasks.insert(id)
-        task.didFailWithError(error)
+        _ = runOnMainIfActive(task, markDone: true) { task.didFailWithError(error) }
     }
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {}
@@ -1081,6 +1591,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         super.viewDidLoad()
         view.backgroundColor = UIColor(red: 9/255, green: 13/255, blue: 22/255, alpha: 1)
 
+        // Ensure video & audio playback works at full volume even when iPhone mute switch is on
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        // Start loopback HTTP/1.1 Range media server (zero-deadlock streaming for 24h+ videos)
+        PicShelfLocalMediaServer.shared.start()
+
         setupWebView()
         loadLocalApp()
     }
@@ -1122,9 +1639,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
     }
 
     func notifyAppActive() {
+        PicShelfLocalMediaServer.shared.ensureRunning()
+        try? AVAudioSession.sharedInstance().setActive(true)
         bridge.startSensors()
+        let origLit = PicShelfLocalMediaServer.shared.originalsOrigin.map { "\"\($0)\"" } ?? "null"
+        let thumbLit = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
         webView?.evaluateJavaScript(
-            "if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
+            "window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(origLit); window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbLit); if (window.state && window.state.biometricLock && window.state.isAppLocked) { if (window.showAppLock) window.showAppLock(); }",
             completionHandler: nil
         )
     }
@@ -1146,15 +1667,20 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         bridge.viewController = self
         contentController.add(bridge, name: "auraBridge")
 
-        // 2. Snapshot existing durable source IDs for synchronous startup validation
+        // 2. Snapshot existing durable source IDs & loopback media server origins
+        PicShelfLocalMediaServer.shared.ensureRunning()
         let existingIds = PicShelfMediaStore.shared.allSourceIds()
         let idsJsonData = (try? JSONSerialization.data(withJSONObject: existingIds, options: [])) ?? Data("[]".utf8)
         let idsJsonLiteral = String(data: idsJsonData, encoding: .utf8) ?? "[]"
+        let originalsOriginLiteral = PicShelfLocalMediaServer.shared.originalsOrigin.map { "\"\($0)\"" } ?? "null"
+        let thumbsOriginLiteral = PicShelfLocalMediaServer.shared.thumbnailsOrigin.map { "\"\($0)\"" } ?? "null"
 
         // 3. Inject compatibility shim for AndroidApp & iOS native bridge
         let bridgeShimScript = """
         (function() {
             window.isNativeIOS = true;
+            window.__PICSHELF_IOS_ORIGINALS_ORIGIN = \(originalsOriginLiteral);
+            window.__PICSHELF_IOS_THUMBNAILS_ORIGIN = \(thumbsOriginLiteral);
             window.__iosKnownSourceIds = new Set(\(idsJsonLiteral));
 
             const send = function(action, payload) {

@@ -14373,13 +14373,18 @@ function setupDetailVideo(photo, requested = {}) {
     // the decoder when returning to a stopped detail video, using its cached source.
     // Local original responses permit CORS. Opt in before loading so Crop and
     // Resize can read the already-decoded frame without starting another decoder.
-    if (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/')) vid.crossOrigin = 'anonymous';
+    const isNativeOrigSrc = window.ArchiveSources?.isOriginalUrl
+      ? window.ArchiveSources.isOriginalUrl(srcUrl)
+      : (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/'));
+    if (isNativeOrigSrc) vid.crossOrigin = 'anonymous';
     else vid.removeAttribute('crossorigin');
     vid.src = srcUrl;
     vid.load();
   }
   _detailVideoNeedsReload = false;
-  const nativeOriginal = (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/')) &&
+  const nativeOriginal = (window.ArchiveSources?.isOriginalUrl
+    ? window.ArchiveSources.isOriginalUrl(srcUrl)
+    : (srcUrl.startsWith('https://picshelf-originals.invalid/') || srcUrl.startsWith('picshelf-originals://local/'))) &&
     (!/^clip_/.test(String(photo.id)) || photo.sharedVideoSource);
   if (!nativeOriginal && typeof getMediaBlobFromIDB === 'function' && typeof activeMediaBlobUrls !== 'undefined' && !activeMediaBlobUrls.has(photo.id)) {
     getMediaBlobFromIDB(photo.id).then(blob => {
@@ -14594,6 +14599,13 @@ function setupDetailVideo(photo, requested = {}) {
       return;
     }
     if (videoHasRemovedAudio(photo)) vid.muted = true;
+    try {
+      if ('preservesPitch' in vid) vid.preservesPitch = true;
+      if ('webkitPreservesPitch' in vid) vid.webkitPreservesPitch = true;
+    } catch (_) {}
+    if (window.isNativeIOS && _videoAudioCtx && _videoAudioCtx.state === 'suspended') {
+      _videoAudioCtx.resume().catch(() => {});
+    }
     vid.playbackRate = _videoSpeed;
     syncDetailVideoPlaybackControls(vid);
     if (typeof resetVideoFsInactivityTimer === 'function') {
@@ -14935,6 +14947,12 @@ function setVideoSpeed(speed, showNotification = true) {
   _videoSpeed = speed;
   const vid = document.getElementById('detailVideo');
   if (vid) {
+    if (window.isNativeIOS) {
+      try {
+        if ('preservesPitch' in vid) vid.preservesPitch = true;
+        if ('webkitPreservesPitch' in vid) vid.webkitPreservesPitch = true;
+      } catch (_) {}
+    }
     vid.playbackRate = speed;
     vid.defaultPlaybackRate = speed;
   }
@@ -15081,7 +15099,18 @@ function setVideoVolume(percent, showNotification = true) {
   } else if (percent <= 100) {
     vid.muted = false;
     vid.volume = percent / 100;
-    if (_videoGainNode) _videoGainNode.gain.value = 1.0;
+    if (window.isNativeIOS && percent < 100) {
+      setupVideoAudioGain(vid);
+      if (_videoAudioCtx && _videoAudioCtx.state === 'suspended') {
+        _videoAudioCtx.resume().catch(() => {});
+      }
+      if (_videoGainNode) _videoGainNode.gain.value = percent / 100;
+    } else if (_videoGainNode) {
+      if (window.isNativeIOS && _videoAudioCtx && _videoAudioCtx.state === 'suspended') {
+        _videoAudioCtx.resume().catch(() => {});
+      }
+      _videoGainNode.gain.value = 1.0;
+    }
     _lastUnmutedVolumePercent = percent;
   } else {
     // 101% to 200% (Super Boost)
@@ -27688,13 +27717,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function readResizeVideoFrame(url, time, filter, request, isCurrent = () => resizeState.sourceRequest === request) {
     // Android reads one frame directly from the authorized original. Avoid a
     // second WebView decoder, which can return black textures while playing.
-    if (url.startsWith('https://picshelf-originals.invalid/') || url.startsWith('picshelf-originals://local/')) {
+    const isNativeResizeUrl = window.ArchiveSources?.isOriginalUrl
+      ? window.ArchiveSources.isOriginalUrl(url)
+      : (url.startsWith('https://picshelf-originals.invalid/') || url.startsWith('picshelf-originals://local/'));
+    if (isNativeResizeUrl) {
       const controller = new AbortController();
       request.cancelFrame = () => controller.abort();
       const timer = setTimeout(() => controller.abort(), 15000);
       try {
         let thumbUrl;
-        if (url.startsWith('picshelf-originals://local/')) {
+        const origOrigin = window.ArchiveSources?.originalsOrigin || 'https://picshelf-originals.invalid/';
+        const thumbOrigin = window.ArchiveSources?.thumbnailsOrigin || 'https://picshelf-thumbnails.invalid/';
+        if (window.isNativeIOS && url.startsWith(origOrigin)) {
+          thumbUrl = thumbOrigin + url.slice(origOrigin.length)
+            .replace(/\/(tar|zip)\//, '/resize-frame-$1/')
+            .replace(/\?.*$/, '') + '?timeUs=' + Math.round(time * 1000000);
+        } else if (url.startsWith('picshelf-originals://local/')) {
           thumbUrl = url.replace('picshelf-originals://local/', 'picshelf-thumbnails://local/')
             .replace(/\/(tar|zip)\//, '/resize-frame-$1/')
             .replace(/\?.*$/, '') + '?timeUs=' + Math.round(time * 1000000);

@@ -79,7 +79,8 @@
     if (archived && !photo.lastEditedAt) {
       copy.fileBlob = null;
       for (const key of ['dataUrl', 'thumbUrl', 'videoUrl']) {
-        if (typeof copy[key] === 'string' && (copy[key].startsWith('blob:') || copy[key].startsWith('https://picshelf-thumbnails.invalid/') || copy[key].startsWith('https://picshelf-originals.invalid/') || copy[key].startsWith('picshelf-thumbnails://local/') || copy[key].startsWith('picshelf-originals://local/'))) copy[key] = null;
+        const val = copy[key];
+        if (typeof val === 'string' && (val.startsWith('blob:') || val.startsWith('https://picshelf-thumbnails.invalid/') || val.startsWith('https://picshelf-originals.invalid/') || val.startsWith('picshelf-thumbnails://local/') || val.startsWith('picshelf-originals://local/') || window.ArchiveSources?.isOriginalUrl?.(val) || window.ArchiveSources?.isThumbnailUrl?.(val))) copy[key] = null;
       }
     }
     const jobs = [];

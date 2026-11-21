@@ -31,19 +31,35 @@
       offset, size, method, mime,
       length: Number.isSafeInteger(length) && length >= 0 ? length : (method === 0 ? size : null) };
   }
-  const ORIGINALS_ORIGIN = window.isNativeIOS ? 'picshelf-originals://local/' : 'https://picshelf-originals.invalid/';
-  const THUMBNAILS_ORIGIN = window.isNativeIOS ? 'picshelf-thumbnails://local/' : 'https://picshelf-thumbnails.invalid/';
+  function getOriginalsOrigin() {
+    return window.__PICSHELF_IOS_ORIGINALS_ORIGIN || (window.isNativeIOS ? 'picshelf-originals://local/' : 'https://picshelf-originals.invalid/');
+  }
+  function getThumbnailsOrigin() {
+    return window.__PICSHELF_IOS_THUMBNAILS_ORIGIN || (window.isNativeIOS ? 'picshelf-thumbnails://local/' : 'https://picshelf-thumbnails.invalid/');
+  }
+  const LOOPBACK_ORIG_RE = /^http:\/\/127\.0\.0\.1:\d+\/ps-[a-f0-9]+\/originals\//i;
+  const LOOPBACK_THUMB_RE = /^http:\/\/127\.0\.0\.1:\d+\/ps-[a-f0-9]+\/thumbs\//i;
   function isOriginalUrl(url) {
-    return typeof url === 'string' && (url.startsWith('https://picshelf-originals.invalid/') || url.startsWith('picshelf-originals://local/'));
+    return typeof url === 'string' && (
+      url.startsWith('https://picshelf-originals.invalid/') ||
+      url.startsWith('picshelf-originals://local/') ||
+      url.startsWith(getOriginalsOrigin()) ||
+      LOOPBACK_ORIG_RE.test(url)
+    );
   }
   function isThumbnailUrl(url) {
-    return typeof url === 'string' && (url.startsWith('https://picshelf-thumbnails.invalid/') || url.startsWith('picshelf-thumbnails://local/'));
+    return typeof url === 'string' && (
+      url.startsWith('https://picshelf-thumbnails.invalid/') ||
+      url.startsWith('picshelf-thumbnails://local/') ||
+      url.startsWith(getThumbnailsOrigin()) ||
+      LOOPBACK_THUMB_RE.test(url)
+    );
   }
   function originalUrl(photo) {
     const info = entryInfo(photo);
     if (!info) return null;
     const length = info.length === null ? '' : `&length=${info.length}`;
-    return `${ORIGINALS_ORIGIN}${encodeURIComponent(info.token)}/${info.kind}/${info.offset}/${info.size}/${info.method}?type=${encodeURIComponent(info.mime)}${length}`;
+    return `${getOriginalsOrigin()}${encodeURIComponent(info.token)}/${info.kind}/${info.offset}/${info.size}/${info.method}?type=${encodeURIComponent(info.mime)}${length}`;
   }
   async function originalBlob(photo) {
     const url = originalUrl(photo);
@@ -87,8 +103,8 @@
   }
   window.ArchiveSources = {
     entryInfo, originalUrl, originalBlob, nativeInfo,
-    originalsOrigin: ORIGINALS_ORIGIN,
-    thumbnailsOrigin: THUMBNAILS_ORIGIN,
+    get originalsOrigin() { return getOriginalsOrigin(); },
+    get thumbnailsOrigin() { return getThumbnailsOrigin(); },
     isOriginalUrl, isThumbnailUrl
   };
 })();
