@@ -9416,6 +9416,9 @@ function updateDetailModalUI(photo, skipImageSrc = false) {
     const controlsBar = document.getElementById('videoControlsBar');
     if (controlsBar) controlsBar.style.display = 'flex';
     if (backdropBtn) backdropBtn.style.display = 'none';
+    ['detailEditCollageBtn','detailEditTextBtn','detailEditStickersBtn','detailEditDrawBtn','detailEditEnhanceBtn','detailEditRemoveBtn'].forEach(cid => {
+      const el = document.getElementById(cid); if (el) el.style.display = 'none';
+    });
     if (trimBtn) trimBtn.style.display = 'inline-flex';
   } else {
     if (typeof stopDetailVideo === 'function') stopDetailVideo();
@@ -9448,10 +9451,16 @@ function updateDetailModalUI(photo, skipImageSrc = false) {
       }
     }
     if (backdropBtn) backdropBtn.style.display = 'inline-flex';
+    ['detailEditCollageBtn','detailEditTextBtn','detailEditStickersBtn','detailEditDrawBtn','detailEditEnhanceBtn','detailEditRemoveBtn'].forEach(cid => {
+      const el = document.getElementById(cid); if (el) el.style.display = 'inline-flex';
+    });
     if (trimBtn) trimBtn.style.display = 'none';
   }
 
   if (typeof resetStudioValues === 'function') resetStudioValues();
+  window.PicShelfCreativeStudio?.onPhotoChanged?.(photo);
+  const editBarEl = document.getElementById('detailPhotoEditBar');
+  if (editBarEl) editBarEl.scrollLeft = 0;
   restoreTrimVideoLooks(photo);
   if (typeof renderStudioFilterThumbnails === 'function') renderStudioFilterThumbnails(photo);
 
@@ -12448,6 +12457,12 @@ function setComparing(isComparing) {
     return;
   }
 
+  if (window.PicShelfCreativeStudio?.onCompare?.(studioState.isComparing)) {
+    if (badge) badge.classList.toggle('active', studioState.isComparing);
+    if (compareBtn) compareBtn.classList.toggle('comparing', studioState.isComparing);
+    return;
+  }
+
   if (studioState.isComparing) {
     if (detailImg) {
       const photo = state.photos.find(p => p.id === state.activePhotoId);
@@ -12482,6 +12497,10 @@ function resetCurrentStudioFeature() {
   const currentTool = studioState.activeTool;
   if (!currentTool) {
     resetStudioValues();
+    return;
+  }
+  if (window.PicShelfCreativeStudio?.isCreativeTool?.(currentTool)) {
+    window.PicShelfCreativeStudio.onResetCurrent();
     return;
   }
 
@@ -12809,6 +12828,7 @@ function resetStudioValues() {
   const stageEl = document.getElementById('detailImageStage');
   if (stageEl) stageEl.classList.remove('nanoscope-mode', 'erasing-pixels', 'image-drag-mode', 'dragging-image');
   setNanoScopeLayout(false);
+  window.PicShelfCreativeStudio?.onResetAll?.();
 }
 
 function setNanoScopeLayout(isNano) {
@@ -12925,6 +12945,12 @@ function openStudioTool(toolName) {
     color: document.getElementById('studioPanelColor'),
     optics: document.getElementById('studioPanelOptics'),
     backdrop: document.getElementById('studioPanelBackdrop'),
+    collage: document.getElementById('studioPanelCollage'),
+    text: document.getElementById('studioPanelText'),
+    stickers: document.getElementById('studioPanelStickers'),
+    draw: document.getElementById('studioPanelDraw'),
+    enhance: document.getElementById('studioPanelEnhance'),
+    remove: document.getElementById('studioPanelRemove'),
     trim: document.getElementById('studioPanelTrim')
   };
 
@@ -13013,7 +13039,12 @@ function openStudioTool(toolName) {
     }
   }
 
-  updateActiveStudioFilter();
+  if (window.PicShelfCreativeStudio?.isCreativeTool?.(toolName)) {
+    window.PicShelfCreativeStudio.onToolOpened(toolName);
+  } else {
+    window.PicShelfCreativeStudio?.onToolLeft?.();
+    updateActiveStudioFilter();
+  }
 
   drawer.classList.add('open');
   const backBtn = document.getElementById('closeDetailBtn');
@@ -13182,6 +13213,7 @@ function closeStudioDrawer(saved = false) {
   window.PicShelfTrimTimes?.end();
   disposeStudioTrimThumbnails();
   disposeStudioBackdropGallery();
+  window.PicShelfCreativeStudio?.onDrawerClosed?.(saved);
   if (typeof revertStudioCropPreviewIfNeeded === 'function') {
     revertStudioCropPreviewIfNeeded();
   }
@@ -13329,11 +13361,28 @@ function updateStudioHeaderTitle() {
     color: '🌈',
     optics: '🪄',
     backdrop: '🖼️',
+    collage: '🧩',
+    text: '🔤',
+    stickers: '😊',
+    draw: '🖌️',
+    enhance: '✨',
+    remove: '🪄',
     trim: '✂️'
   };
   const icon = toolIcons[studioState.activeTool] || '🎨';
-  let locName = (window.t && (window.t('detail_edit_' + studioState.activeTool) || (studioState.activeTool === 'trim' ? (window.t('detail_edit_trim_title') || window.t('detail_edit_trim')) : ''))) ||
-    (studioState.activeTool.charAt(0).toUpperCase() + studioState.activeTool.slice(1));
+  const fallbackNames = {
+    collage: 'Collage Maker',
+    text: 'Text & Fonts',
+    stickers: 'Stickers',
+    draw: 'Draw & Doodle',
+    enhance: 'Enhance & Retouch',
+    remove: 'Smart Remove'
+  };
+  const i18nKey = 'detail_edit_' + studioState.activeTool;
+  const translated = window.t ? window.t(i18nKey) : '';
+  let locName = (translated && translated !== i18nKey)
+    ? translated
+    : (fallbackNames[studioState.activeTool] || (studioState.activeTool.charAt(0).toUpperCase() + studioState.activeTool.slice(1)));
   if (studioState.activeTool === 'trim') {
     locName = (window.t && (window.t('detail_edit_trim_title') || window.t('detail_edit_trim'))) || 'Trim Video';
   }
@@ -13754,7 +13803,12 @@ function applyAndSaveStudioEdits() {
     return;
   }
 
+  if (window.PicShelfCreativeStudio?.handleSave?.()) {
+    return;
+  }
+
   const isEdited = (
+    !!window.PicShelfCreativeStudio?.hasEdits?.() ||
     studioState.lux > 0 ||
     studioState.filter !== 'normal' ||
     studioState.brightness !== 0 ||
@@ -13965,6 +14019,8 @@ function applyAndSaveStudioEdits() {
           }
           ctx.restore();
         }
+
+        window.PicShelfCreativeStudio?.compositeOntoCanvas?.(canvas);
 
         // The finished picture shows at once; its full-quality JPEG (the same bytes as
         // canvas.toDataURL('image/jpeg', 0.98)) is written without freezing the screen.
@@ -16397,6 +16453,12 @@ function initPhotoEditorStudio() {
   document.getElementById('detailEditColorBtn')?.addEventListener('click', () => openStudioTool('color'));
   document.getElementById('detailEditOpticsBtn')?.addEventListener('click', () => openStudioTool('optics'));
   document.getElementById('detailEditBackdropBtn')?.addEventListener('click', () => openStudioTool('backdrop'));
+  document.getElementById('detailEditCollageBtn')?.addEventListener('click', () => openStudioTool('collage'));
+  document.getElementById('detailEditTextBtn')?.addEventListener('click', () => openStudioTool('text'));
+  document.getElementById('detailEditStickersBtn')?.addEventListener('click', () => openStudioTool('stickers'));
+  document.getElementById('detailEditDrawBtn')?.addEventListener('click', () => openStudioTool('draw'));
+  document.getElementById('detailEditEnhanceBtn')?.addEventListener('click', () => openStudioTool('enhance'));
+  document.getElementById('detailEditRemoveBtn')?.addEventListener('click', () => openStudioTool('remove'));
   document.getElementById('detailEditTrimBtn')?.addEventListener('click', () => openStudioTool('trim'));
 
   // 2. Lux Controls

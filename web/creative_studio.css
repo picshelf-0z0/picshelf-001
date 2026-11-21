@@ -1,0 +1,559 @@
+/* ============================================================================
+   PicShelf Creative Studio (Collage Maker, Text, Stickers, Draw, Enhance, Remove)
+   Swipeable Photo Edit Tool Bar + Studio Panels (Dark & Light Mode)
+   ============================================================================ */
+
+/* Make the existing Quick Photo Editing Bar smoothly horizontally swipeable
+   while keeping all 6 original tools (Lux..Backdrop) cleanly visible first. */
+.detail-photo-edit-bar {
+  justify-content: flex-start !important;
+  flex-wrap: nowrap !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  gap: 2px !important;
+  padding: 6px 8px !important;
+  touch-action: pan-x;
+}
+
+.detail-photo-edit-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.detail-photo-edit-bar .detail-edit-tool-btn {
+  flex: 0 0 calc((100% - 10px) / 6);
+  min-width: 54px;
+  max-width: 78px;
+  scroll-snap-align: start;
+}
+
+/* Accent Colors for the 6 New Creative Studio Tools */
+/* 7. Collage - Vibrant Rose-Magenta */
+.detail-edit-tool-btn.action-collage .edit-tool-icon {
+  color: #ec4899;
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.24) 0%, rgba(168, 85, 247, 0.1) 100%);
+  border-color: rgba(236, 72, 153, 0.36);
+}
+.detail-edit-tool-btn.action-collage.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(236, 72, 153, 0.48) 0%, rgba(168, 85, 247, 0.3) 100%);
+  border-color: #ec4899;
+  box-shadow: 0 0 22px rgba(236, 72, 153, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-collage.active .edit-tool-label {
+  color: #f472b6;
+  text-shadow: 0 0 8px rgba(236, 72, 153, 0.5);
+}
+.detail-edit-tool-btn.action-collage.active .edit-tool-active-dot {
+  background: #ec4899;
+  box-shadow: 0 0 6px #ec4899;
+}
+
+/* 8. Text - Crisp Sky Cyan */
+.detail-edit-tool-btn.action-text .edit-tool-icon {
+  color: #38bdf8;
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.22) 0%, rgba(14, 165, 233, 0.08) 100%);
+  border-color: rgba(56, 189, 248, 0.34);
+}
+.detail-edit-tool-btn.action-text.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.45) 0%, rgba(14, 165, 233, 0.28) 100%);
+  border-color: #38bdf8;
+  box-shadow: 0 0 22px rgba(56, 189, 248, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-text.active .edit-tool-label {
+  color: #38bdf8;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+}
+.detail-edit-tool-btn.action-text.active .edit-tool-active-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 6px #38bdf8;
+}
+
+/* 9. Stickers - Playful Coral Gold */
+.detail-edit-tool-btn.action-stickers .edit-tool-icon {
+  color: #fb7185;
+  background: linear-gradient(135deg, rgba(251, 113, 133, 0.24) 0%, rgba(251, 191, 36, 0.1) 100%);
+  border-color: rgba(251, 113, 133, 0.35);
+}
+.detail-edit-tool-btn.action-stickers.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(251, 113, 133, 0.48) 0%, rgba(251, 191, 36, 0.28) 100%);
+  border-color: #fb7185;
+  box-shadow: 0 0 22px rgba(251, 113, 133, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-stickers.active .edit-tool-label {
+  color: #fda4af;
+  text-shadow: 0 0 8px rgba(251, 113, 133, 0.5);
+}
+.detail-edit-tool-btn.action-stickers.active .edit-tool-active-dot {
+  background: #fb7185;
+  box-shadow: 0 0 6px #fb7185;
+}
+
+/* 10. Draw / Doodle - Electric Emerald */
+.detail-edit-tool-btn.action-draw .edit-tool-icon {
+  color: #34d399;
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.22) 0%, rgba(16, 185, 129, 0.08) 100%);
+  border-color: rgba(52, 211, 153, 0.34);
+}
+.detail-edit-tool-btn.action-draw.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.46) 0%, rgba(16, 185, 129, 0.28) 100%);
+  border-color: #34d399;
+  box-shadow: 0 0 22px rgba(52, 211, 153, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-draw.active .edit-tool-label {
+  color: #34d399;
+  text-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+}
+.detail-edit-tool-btn.action-draw.active .edit-tool-active-dot {
+  background: #34d399;
+  box-shadow: 0 0 6px #34d399;
+}
+
+/* 11. Enhance & Retouch - Radiant Indigo */
+.detail-edit-tool-btn.action-enhance .edit-tool-icon {
+  color: #818cf8;
+  background: linear-gradient(135deg, rgba(129, 140, 248, 0.24) 0%, rgba(99, 102, 241, 0.08) 100%);
+  border-color: rgba(129, 140, 248, 0.36);
+}
+.detail-edit-tool-btn.action-enhance.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(129, 140, 248, 0.48) 0%, rgba(99, 102, 241, 0.3) 100%);
+  border-color: #818cf8;
+  box-shadow: 0 0 22px rgba(129, 140, 248, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-enhance.active .edit-tool-label {
+  color: #a5b4fc;
+  text-shadow: 0 0 8px rgba(129, 140, 248, 0.5);
+}
+.detail-edit-tool-btn.action-enhance.active .edit-tool-active-dot {
+  background: #818cf8;
+  box-shadow: 0 0 6px #818cf8;
+}
+
+/* 12. Smart Remove - Sunset Orange */
+.detail-edit-tool-btn.action-remove .edit-tool-icon {
+  color: #fb923c;
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.22) 0%, rgba(234, 88, 12, 0.08) 100%);
+  border-color: rgba(251, 146, 60, 0.34);
+}
+.detail-edit-tool-btn.action-remove.active .edit-tool-icon {
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.46) 0%, rgba(234, 88, 12, 0.28) 100%);
+  border-color: #fb923c;
+  box-shadow: 0 0 22px rgba(251, 146, 60, 0.65), 0 4px 14px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  transform: scale(1.1);
+}
+.detail-edit-tool-btn.action-remove.active .edit-tool-label {
+  color: #fdba74;
+  text-shadow: 0 0 8px rgba(251, 146, 60, 0.5);
+}
+.detail-edit-tool-btn.action-remove.active .edit-tool-active-dot {
+  background: #fb923c;
+  box-shadow: 0 0 6px #fb923c;
+}
+
+/* ============================================================================
+   Interactive Stage Overlay Canvas & Before/After Curtain
+   ============================================================================ */
+.detail-creative-canvas {
+  position: relative;
+  display: none;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 6;
+}
+
+.creative-split-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  display: none;
+  overflow: hidden;
+  border-radius: 10px;
+}
+
+.creative-split-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  left: 50%;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.65);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: ew-resize;
+  transform: translateX(-1px);
+}
+
+.creative-split-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.88);
+  border: 2px solid #ffffff;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+}
+
+.creative-split-badge {
+  position: absolute;
+  top: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  backdrop-filter: blur(8px);
+}
+.creative-split-badge.before { left: 10px; }
+.creative-split-badge.after { right: 10px; background: rgba(99, 102, 241, 0.82); }
+
+/* Floating Compact Stage Action Bar (Selected Layer or Collage Cell) */
+.creative-floating-bar {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  max-width: calc(100% - 16px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.creative-floating-bar::-webkit-scrollbar { display: none; }
+
+.creative-float-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.creative-float-btn:active { transform: scale(0.93); }
+.creative-float-btn.active {
+  background: rgba(236, 72, 153, 0.35);
+  border-color: #ec4899;
+  color: #ffffff;
+}
+.creative-float-btn.danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+/* ============================================================================
+   Creative Studio Drawer Controls (Compact, Fast, Scrollable Rails)
+   ============================================================================ */
+.creative-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.creative-subpanel {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+.creative-subpanel.active {
+  display: flex;
+}
+
+/* Horizontal Scrollable Chip / Card Rails */
+.creative-rail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 12px 4px 2px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.creative-rail::-webkit-scrollbar { display: none; }
+
+/* Collage Layout Grid Icons */
+.collage-layout-card {
+  flex: 0 0 auto;
+  width: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 4px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.collage-layout-card.active {
+  border-color: #ec4899;
+  background: rgba(236, 72, 153, 0.22);
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(236, 72, 153, 0.4);
+}
+.collage-layout-svg {
+  width: 34px;
+  height: 34px;
+  display: block;
+}
+.collage-layout-name {
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 46px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Ratio / Preset / Font / Template Pills */
+.creative-pill-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+}
+.creative-pill-btn:active { transform: scale(0.95); }
+.creative-pill-btn.active {
+  border-color: #a855f7;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.36), rgba(236, 72, 153, 0.28));
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(168, 85, 247, 0.38);
+}
+
+/* Color & Gradient Swatches */
+.creative-swatch {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.creative-swatch.active {
+  border-color: #ffffff;
+  transform: scale(1.16);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+
+.creative-color-input {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* Inline Compact Row (Text input, Action Buttons, Dual Sliders) */
+.creative-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.creative-text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.72);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+.creative-text-input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25);
+}
+
+.creative-primary-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 13px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.creative-primary-btn:active { transform: scale(0.96); }
+
+/* Sticker Grid Rail */
+.creative-sticker-btn {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+  font-size: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.creative-sticker-btn:active { transform: scale(0.9); }
+.creative-sticker-btn.badge-sticker {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  padding: 0 11px;
+}
+
+/* Collage Embedded 1M+ Photo Picker Rail */
+.collage-picker-wrap {
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(236, 72, 153, 0.35);
+}
+.collage-picker-wrap.open {
+  display: flex;
+}
+.collage-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: #f9a8d4;
+}
+.collage-picker-rail {
+  min-height: 62px;
+  max-height: 78px;
+}
+
+/* Compact 2-Column Slider Grid */
+.creative-slider-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.creative-slider-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.creative-slider-cell .studio-slider-row {
+  margin-bottom: 0;
+  font-size: 11px;
+}
+
+/* Hint Pill for Remove / Draw */
+.creative-hint-line {
+  font-size: 11px;
+  color: rgba(226, 232, 240, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Light Mode Support */
+body.light-mode .collage-layout-card,
+body.light-mode .creative-pill-btn,
+body.light-mode .creative-sticker-btn {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+body.light-mode .collage-layout-card.active,
+body.light-mode .creative-pill-btn.active {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(236, 72, 153, 0.18));
+  border-color: #db2777;
+  color: #831843;
+}
+body.light-mode .creative-text-input {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+body.light-mode .collage-picker-wrap {
+  background: #f8fafc;
+  border-color: rgba(219, 39, 119, 0.35);
+}
+body.light-mode .collage-picker-header {
+  color: #be185d;
+}
+body.light-mode .creative-hint-line {
+  color: #475569;
+}
+body.light-mode .creative-swatch {
+  border-color: rgba(15, 23, 42, 0.22);
+}
+body.light-mode .creative-swatch.active {
+  border-color: #0f172a;
+}

@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="download_ui.css">
   <link rel="stylesheet" href="settings_ui.css">
   <link rel="stylesheet" href="backdrop_gallery.css">
+  <link rel="stylesheet" href="creative_studio.css">
   <link rel="stylesheet" href="trim_thumbnails.css">
   <link rel="stylesheet" href="trim_time_inputs.css">
   <link rel="stylesheet" href="video_download_ui.css">
@@ -1481,6 +1482,15 @@
               <div class="detail-backdrop-layer" id="detailBackdropLayer"></div>
               <canvas id="detailBackdropCanvas" class="detail-backdrop-canvas" style="display: none;"></canvas>
               <canvas id="detailSubjectCanvas" class="detail-subject-canvas" style="display: none;"></canvas>
+              <canvas id="detailCreativeCanvas" class="detail-creative-canvas" style="display: none;"></canvas>
+              <div class="creative-split-overlay" id="creativeSplitOverlay" style="display: none;">
+                <span class="creative-split-badge before">Before</span>
+                <span class="creative-split-badge after">After</span>
+                <div class="creative-split-line" id="creativeSplitLine">
+                  <div class="creative-split-knob"><i class="fa-solid fa-left-right"></i></div>
+                </div>
+              </div>
+              <div class="creative-floating-bar" id="creativeFloatingBar" style="display: none;"></div>
               <img id="detailImage" src="" alt="Photo Full View" draggable="false">
               <video id="detailVideo" playsinline preload="metadata" style="display: none;" draggable="false"></video>
               
@@ -2068,6 +2078,205 @@
               </div>
             </div>
 
+            <!-- Tool Panel: Collage Maker -->
+            <div class="studio-tool-panel" id="studioPanelCollage" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="studio-subnav-pills" id="studioCollageSubnav">
+                  <button type="button" class="studio-subnav-btn active" data-sub="layout"><i class="fa-solid fa-table-cells-large"></i> Layout</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="templates"><i class="fa-solid fa-sparkles"></i> Templates</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="ratio"><i class="fa-solid fa-crop"></i> Ratio</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="background"><i class="fa-solid fa-fill-drip"></i> BG</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="border"><i class="fa-solid fa-border-all"></i> Border</button>
+                </div>
+
+                <!-- Subpanel: Layout & Photo Picker -->
+                <div class="creative-subpanel active" data-subpanel="layout">
+                  <div class="creative-rail" id="collageLayoutsRail"></div>
+                  <div class="creative-inline-row">
+                    <button type="button" class="creative-pill-btn" id="collagePickPhotoBtn"><i class="fa-solid fa-images"></i> Pick Slot Photo</button>
+                    <button type="button" class="creative-pill-btn" id="collageAutoFillBtn"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto-Fill</button>
+                  </div>
+                  <div class="collage-picker-wrap" id="collagePickerWrap">
+                    <div class="collage-picker-header">
+                      <span id="collagePickerTitle">Pick photo for Slot 1</span>
+                      <button type="button" class="creative-pill-btn" id="collagePickerCloseBtn" style="padding:2px 8px;font-size:10px;">Done</button>
+                    </div>
+                    <div class="collage-picker-rail" id="collagePickerRail"></div>
+                  </div>
+                </div>
+
+                <!-- Subpanel: Templates -->
+                <div class="creative-subpanel" data-subpanel="templates">
+                  <div class="creative-rail" id="collageTemplatesRail"></div>
+                </div>
+
+                <!-- Subpanel: Aspect Ratio -->
+                <div class="creative-subpanel" data-subpanel="ratio">
+                  <div class="creative-rail" id="collageRatioRail"></div>
+                </div>
+
+                <!-- Subpanel: Background -->
+                <div class="creative-subpanel" data-subpanel="background">
+                  <div class="creative-rail" id="collageBgRail"></div>
+                </div>
+
+                <!-- Subpanel: Border, Spacing, Radius & Quality -->
+                <div class="creative-subpanel" data-subpanel="border">
+                  <div class="creative-slider-grid">
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Spacing</span><span id="collageSpacingVal">10px</span></div>
+                      <input type="range" class="studio-slider" id="collageSpacingSlider" min="0" max="40" value="10">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Margin</span><span id="collageMarginVal">14px</span></div>
+                      <input type="range" class="studio-slider" id="collageMarginSlider" min="0" max="48" value="14">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Corners</span><span id="collageRadiusVal">12px</span></div>
+                      <input type="range" class="studio-slider" id="collageRadiusSlider" min="0" max="60" value="12">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Save Size</span></div>
+                      <div class="creative-rail" id="collageQualityRow" style="padding:0;">
+                        <button type="button" class="creative-pill-btn" data-qdim="1600" style="padding:3px 8px;font-size:10px;">Std</button>
+                        <button type="button" class="creative-pill-btn active" data-qdim="2400" style="padding:3px 8px;font-size:10px;">HD</button>
+                        <button type="button" class="creative-pill-btn" data-qdim="3840" style="padding:3px 8px;font-size:10px;">4K</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool Panel: Stylish Text & Fonts -->
+            <div class="studio-tool-panel" id="studioPanelText" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="creative-inline-row">
+                  <input type="text" class="creative-text-input" id="creativeTextInput" placeholder="Type text to add..." maxlength="120" autocomplete="off">
+                  <button type="button" class="creative-primary-btn" id="creativeTextAddBtn"><i class="fa-solid fa-plus"></i> Add</button>
+                </div>
+                <div class="creative-rail" id="creativeTextFontsRail"></div>
+                <div class="creative-rail" id="creativeTextColorsRail"></div>
+                <div class="creative-slider-grid">
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Size</span><span id="creativeTextSizeVal">100%</span></div>
+                    <input type="range" class="studio-slider" id="creativeTextSizeSlider" min="35" max="260" value="100">
+                  </div>
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Rotate</span><span id="creativeTextRotVal">0°</span></div>
+                    <input type="range" class="studio-slider bi-slider" id="creativeTextRotSlider" min="-180" max="180" value="0">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool Panel: Stickers & Stamps -->
+            <div class="studio-tool-panel" id="studioPanelStickers" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="studio-subnav-pills" id="creativeStickerPacks"></div>
+                <div class="creative-rail" id="creativeStickersRail"></div>
+                <div class="creative-slider-grid">
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Size</span><span id="creativeStickerSizeVal">100%</span></div>
+                    <input type="range" class="studio-slider" id="creativeStickerSizeSlider" min="35" max="260" value="100">
+                  </div>
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Rotate</span><span id="creativeStickerRotVal">0°</span></div>
+                    <input type="range" class="studio-slider bi-slider" id="creativeStickerRotSlider" min="-180" max="180" value="0">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool Panel: Draw & Doodle -->
+            <div class="studio-tool-panel" id="studioPanelDraw" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="studio-subnav-pills" id="creativeDrawBrushSubnav">
+                  <button type="button" class="studio-subnav-btn active" data-brush="pen"><i class="fa-solid fa-pen"></i> Pen</button>
+                  <button type="button" class="studio-subnav-btn" data-brush="neon"><i class="fa-solid fa-bolt"></i> Neon</button>
+                  <button type="button" class="studio-subnav-btn" data-brush="marker"><i class="fa-solid fa-highlighter"></i> Marker</button>
+                  <button type="button" class="studio-subnav-btn" data-brush="dashed"><i class="fa-solid fa-ellipsis"></i> Dashed</button>
+                  <button type="button" class="studio-subnav-btn" data-brush="sparkle"><i class="fa-solid fa-wand-magic-sparkles"></i> Sparkle</button>
+                  <button type="button" class="studio-subnav-btn" data-brush="eraser"><i class="fa-solid fa-eraser"></i> Eraser</button>
+                </div>
+                <div class="creative-rail" id="creativeDrawColorsRail"></div>
+                <div class="creative-slider-grid">
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Brush</span><span id="creativeDrawSizeVal">10px</span></div>
+                    <input type="range" class="studio-slider" id="creativeDrawSizeSlider" min="2" max="42" value="10">
+                  </div>
+                  <div class="creative-slider-cell">
+                    <div class="studio-slider-row"><span>Opacity</span><span id="creativeDrawOpacityVal">100%</span></div>
+                    <input type="range" class="studio-slider" id="creativeDrawOpacitySlider" min="15" max="100" value="100">
+                  </div>
+                </div>
+                <div class="creative-inline-row">
+                  <button type="button" class="creative-pill-btn" id="creativeDrawUndoBtn"><i class="fa-solid fa-rotate-left"></i> Undo</button>
+                  <button type="button" class="creative-pill-btn" id="creativeDrawRedoBtn"><i class="fa-solid fa-rotate-right"></i> Redo</button>
+                  <button type="button" class="creative-pill-btn" id="creativeDrawClearBtn"><i class="fa-solid fa-trash"></i> Clear</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool Panel: Enhance & Retouch -->
+            <div class="studio-tool-panel" id="studioPanelEnhance" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="studio-subnav-pills" id="studioEnhanceSubnav">
+                  <button type="button" class="studio-subnav-btn active" data-sub="preset"><i class="fa-solid fa-wand-sparkles"></i> AI Enhance</button>
+                  <button type="button" class="studio-subnav-btn" data-sub="retouch"><i class="fa-solid fa-face-smile"></i> Portrait Retouch</button>
+                </div>
+                <div class="creative-subpanel active" data-subpanel="preset">
+                  <div class="creative-rail" id="creativeEnhancePresets">
+                    <button type="button" class="creative-pill-btn" data-preset="original">Original</button>
+                    <button type="button" class="creative-pill-btn active" data-preset="hd"><i class="fa-solid fa-sparkles"></i> HD Clarity</button>
+                    <button type="button" class="creative-pill-btn" data-preset="2x"><i class="fa-solid fa-bolt"></i> 2X Crisp</button>
+                    <button type="button" class="creative-pill-btn" data-preset="vivid"><i class="fa-solid fa-sun"></i> Vivid Pop</button>
+                    <button type="button" class="creative-pill-btn" data-preset="portrait"><i class="fa-solid fa-face-smile"></i> Selfie Glow</button>
+                  </div>
+                  <div class="creative-hint-line"><span>Drag the Before / After divider on the photo to compare</span></div>
+                </div>
+                <div class="creative-subpanel" data-subpanel="retouch">
+                  <div class="creative-slider-grid">
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Clarity</span><span id="creativeEnhanceClarityVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceClaritySlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Smooth Skin</span><span id="creativeEnhanceSmoothVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceSmoothSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Brighten</span><span id="creativeEnhanceBrightenVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceBrightenSlider" min="0" max="100" value="0">
+                    </div>
+                    <div class="creative-slider-cell">
+                      <div class="studio-slider-row"><span>Warm Glow</span><span id="creativeEnhanceGlowVal">0%</span></div>
+                      <input type="range" class="studio-slider" id="creativeEnhanceGlowSlider" min="0" max="100" value="0">
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool Panel: Smart Object Remove -->
+            <div class="studio-tool-panel" id="studioPanelRemove" style="display: none;">
+              <div class="creative-panel-body">
+                <div class="creative-hint-line">
+                  <span>Brush over any spot, wire, or object to erase it seamlessly</span>
+                </div>
+                <div class="studio-slider-row">
+                  <span class="studio-slider-label"><i class="fa-solid fa-eraser"></i> Brush Size</span>
+                  <span class="studio-slider-value" id="creativeRemoveSizeVal">28px</span>
+                </div>
+                <input type="range" class="studio-slider" id="creativeRemoveSizeSlider" min="8" max="76" value="28">
+                <div class="creative-inline-row">
+                  <button type="button" class="creative-primary-btn" id="creativeRemoveApplyBtn"><i class="fa-solid fa-wand-magic-sparkles"></i> Remove</button>
+                  <button type="button" class="creative-pill-btn" id="creativeRemoveUndoBtn"><i class="fa-solid fa-rotate-left"></i> Undo</button>
+                  <button type="button" class="creative-pill-btn" id="creativeRemoveClearBtn"><i class="fa-solid fa-xmark"></i> Clear</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Tool Panel: Trim & Video Tools (When in Video Mode) -->
             <div class="studio-tool-panel" id="studioPanelTrim" style="display: none;">
               <div class="studio-subnav-pills" id="studioTrimSubnav">
@@ -2315,6 +2524,36 @@
             <button type="button" class="detail-edit-tool-btn action-backdrop" id="detailEditBackdropBtn" data-tool="backdrop" title="Backdrop" data-i18n-title="detail_edit_backdrop" aria-label="Backdrop" data-i18n-aria="detail_edit_backdrop">
               <span class="edit-tool-icon"><i class="fa-solid fa-layer-group"></i></span>
               <span class="edit-tool-label" data-i18n="detail_edit_backdrop">Backdrop</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-collage" id="detailEditCollageBtn" data-tool="collage" title="Collage Maker" aria-label="Collage Maker">
+              <span class="edit-tool-icon"><i class="fa-solid fa-table-cells-large"></i></span>
+              <span class="edit-tool-label">Collage</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-text" id="detailEditTextBtn" data-tool="text" title="Text &amp; Fonts" aria-label="Text &amp; Fonts">
+              <span class="edit-tool-icon"><i class="fa-solid fa-font"></i></span>
+              <span class="edit-tool-label">Text</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-stickers" id="detailEditStickersBtn" data-tool="stickers" title="Stickers" aria-label="Stickers">
+              <span class="edit-tool-icon"><i class="fa-solid fa-face-smile"></i></span>
+              <span class="edit-tool-label">Stickers</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-draw" id="detailEditDrawBtn" data-tool="draw" title="Draw &amp; Doodle" aria-label="Draw &amp; Doodle">
+              <span class="edit-tool-icon"><i class="fa-solid fa-paintbrush"></i></span>
+              <span class="edit-tool-label">Draw</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-enhance" id="detailEditEnhanceBtn" data-tool="enhance" title="Enhance &amp; Retouch" aria-label="Enhance &amp; Retouch">
+              <span class="edit-tool-icon"><i class="fa-solid fa-wand-sparkles"></i></span>
+              <span class="edit-tool-label">Enhance</span>
+              <span class="edit-tool-active-dot"></span>
+            </button>
+            <button type="button" class="detail-edit-tool-btn action-remove" id="detailEditRemoveBtn" data-tool="remove" title="Smart Remove" aria-label="Smart Remove">
+              <span class="edit-tool-icon"><i class="fa-solid fa-eraser"></i></span>
+              <span class="edit-tool-label">Remove</span>
               <span class="edit-tool-active-dot"></span>
             </button>
             <button type="button" class="detail-edit-tool-btn action-trim" id="detailEditTrimBtn" data-tool="trim" title="Trim Video" data-i18n-title="detail_edit_trim_title" aria-label="Trim Video" data-i18n-aria="detail_edit_trim_title" style="display: none;">
@@ -4976,6 +5215,7 @@
   <script src="backdrop_extraction.js"></script>
   <script src="backdrop_precision.js"></script>
   <script src="backdrop_gallery.js"></script>
+  <script src="creative_studio.js"></script>
   <script src="trim_thumbnails.js"></script>
   <script src="trim_time_inputs.js"></script>
   <script src="video_positions.js"></script>
