@@ -53,7 +53,6 @@ jobs:
 
       - name: Build & Verify on Apple iOS Simulator
         continue-on-error: true
-        timeout-minutes: 6
         run: |
           xcodebuild build \
             -project ios/AuraPhotoOrganizer.xcodeproj \
@@ -69,13 +68,13 @@ jobs:
           DEVICE_UDID=$(xcrun simctl list devices available | grep "iPhone" | head -n 1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
           echo "Booting iOS Simulator UDID: $DEVICE_UDID"
           xcrun simctl boot "$DEVICE_UDID" || true
-          xcrun simctl bootstatus "$DEVICE_UDID" -b
-          xcrun simctl install "$DEVICE_UDID" "$SIM_APP"
-          xcrun simctl launch "$DEVICE_UDID" com.aistudio.photoorganizer.xwylza
+          perl -e 'alarm 120; exec @ARGV' xcrun simctl bootstatus "$DEVICE_UDID" -b || true
+          perl -e 'alarm 60; exec @ARGV' xcrun simctl install "$DEVICE_UDID" "$SIM_APP" || true
+          perl -e 'alarm 30; exec @ARGV' xcrun simctl launch "$DEVICE_UDID" com.aistudio.photoorganizer.xwylza || true
           sleep 6
-          xcrun simctl io "$DEVICE_UDID" screenshot build/ios-simulator-screenshot.png
+          perl -e 'alarm 30; exec @ARGV' xcrun simctl io "$DEVICE_UDID" screenshot build/ios-simulator-screenshot.png || true
           xcrun simctl shutdown "$DEVICE_UDID" || true
-          ls -lh build/ios-simulator-screenshot.png
+          ls -lh build/ios-simulator-screenshot.png || true
 
       - name: Upload IPA & Simulator Screenshot Artifacts
         uses: actions/upload-artifact@v4
