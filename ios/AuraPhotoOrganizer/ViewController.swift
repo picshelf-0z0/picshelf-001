@@ -1793,13 +1793,13 @@ final class PicShelfStartupCoverView: UIView {
         ctx.scaleBy(x: prismScale, y: prismScale)
         ctx.rotate(by: (6.0 * breathe) * (.pi / 180.0))
         drawImage(prismImage, half: 38, in: ctx)
-        ctx.restore()
+        ctx.restoreGState()
 
         // 9. Handwritten "PicShelf" connected script wordmark (320ms -> 2720ms)
         let progress = wordmarkCompleted ? 1.0 : CGFloat(max(0.0, min(1.0, (elapsed - 320.0) / 2400.0)))
         drawWordmark(progress: progress, in: ctx)
 
-        ctx.restore()
+        ctx.restoreGState()
     }
 
     private func drawImage(_ img: CGImage?, half: CGFloat, in ctx: CGContext) {
@@ -1807,7 +1807,7 @@ final class PicShelfStartupCoverView: UIView {
         ctx.saveGState()
         ctx.scaleBy(x: 1, y: -1)
         ctx.draw(img, in: CGRect(x: -half, y: -half, width: half * 2, height: half * 2))
-        ctx.restore()
+        ctx.restoreGState()
     }
 
     private func drawRotatedImage(_ img: CGImage?, half: CGFloat, radians: CGFloat, in ctx: CGContext) {
@@ -1816,7 +1816,7 @@ final class PicShelfStartupCoverView: UIView {
         ctx.rotate(by: radians)
         ctx.scaleBy(x: 1, y: -1)
         ctx.draw(img, in: CGRect(x: -half, y: -half, width: half * 2, height: half * 2))
-        ctx.restore()
+        ctx.restoreGState()
     }
 
     private func drawSheen(elapsedMs: Double, in ctx: CGContext) {
@@ -1830,7 +1830,7 @@ final class PicShelfStartupCoverView: UIView {
         ctx.translateBy(x: -205.0 + 410.0 * CGFloat(sweep / 1450.0), y: 0)
         ctx.clip(to: CGRect(x: -23, y: -190, width: 46, height: 380))
         ctx.drawLinearGradient(grad, start: CGPoint(x: -23, y: 0), end: CGPoint(x: 23, y: 0), options: [])
-        ctx.restore()
+        ctx.restoreGState()
     }
 
     private func drawWordmark(progress: CGFloat, in ctx: CGContext) {
@@ -1877,7 +1877,7 @@ final class PicShelfStartupCoverView: UIView {
                 break
             }
         }
-        ctx.restore()
+        ctx.restoreGState()
     }
 
     // MARK: - Layer Pre-Rasterization Helpers
@@ -1972,7 +1972,7 @@ final class PicShelfStartupCoverView: UIView {
             if let grad = Self.makeGradient(colors: [0xffb89d99, 0xff70575a, 0xff775755, 0xff976952], locations: nil) {
                 ctx.drawLinearGradient(grad, start: CGPoint(x: -132, y: -132), end: CGPoint(x: 132, y: 132), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
             }
-            ctx.restore()
+            ctx.restoreGState()
         }
     }
 
@@ -2022,7 +2022,7 @@ final class PicShelfStartupCoverView: UIView {
             if let grad = Self.makeGradient(colors: [0xff4b2c3f, 0xff291421, 0xff170c18, 0xff351622], locations: [0.0, 0.13, 0.78, 1.0]) {
                 ctx.drawLinearGradient(grad, start: CGPoint(x: -80, y: -129), end: CGPoint(x: 80, y: 129), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
             }
-            ctx.restore()
+            ctx.restoreGState()
 
             let strokeRect = CGRect(x: -127.8, y: -127.8, width: 255.6, height: 255.6)
             ctx.addPath(UIBezierPath(roundedRect: strokeRect, cornerRadius: 54).cgPath)
@@ -2105,7 +2105,7 @@ final class PicShelfStartupCoverView: UIView {
                 ctx.setStrokeColor(Self.argbColor(stroke).cgColor)
                 ctx.setLineWidth(lineWidth)
                 ctx.strokePath()
-                ctx.restore()
+                ctx.restoreGState()
             }
 
             // Central octagon
@@ -2117,14 +2117,14 @@ final class PicShelfStartupCoverView: UIView {
             if let octGrad = Self.makeGradient(colors: [0x73fbe0d4, 0x66f43f5e, 0x6bc084fc, 0x7306b6d4], locations: [0.0, 0.35, 0.7, 1.0]) {
                 ctx.drawLinearGradient(octGrad, start: CGPoint(x: 72, y: 72), end: CGPoint(x: 128, y: 128), options: [])
             }
-            ctx.restore()
+            ctx.restoreGState()
             ctx.saveGState()
             ctx.setAlpha(0.85)
             ctx.addPath(oct)
             ctx.setStrokeColor(Self.argbColor(0x99ffffff).cgColor)
             ctx.setLineWidth(0.8)
             ctx.strokePath()
-            ctx.restore()
+            ctx.restoreGState()
 
             // Cardinal facets
             drawSolidFacet([(100,56),(88,72),(112,72)], fill: 0x99ffffff, stroke: 0xb2fbe0d4, alpha: 0.8, lineWidth: 0.6)
@@ -2141,14 +2141,14 @@ final class PicShelfStartupCoverView: UIView {
             if let tlGrad = Self.makeGradient(colors: [0xb2ffffff, 0xa6c084fc, 0xb2f43f5e, 0x9938bdf8], locations: [0.0, 0.4, 0.75, 1.0]) {
                 ctx.drawLinearGradient(tlGrad, start: CGPoint(x: 88, y: 68), end: CGPoint(x: 68, y: 88), options: [])
             }
-            ctx.restore()
+            ctx.restoreGState()
             ctx.saveGState()
             ctx.setAlpha(0.75)
             ctx.addPath(tl)
             ctx.setStrokeColor(Self.argbColor(0xb2ffffff).cgColor)
             ctx.setLineWidth(0.6)
             ctx.strokePath()
-            ctx.restore()
+            ctx.restoreGState()
 
             // Other diagonal & outer facets
             drawSolidFacet([(132,68),(112,72),(128,88)], fill: 0xa6ffffff, stroke: 0xb2ffffff, alpha: 0.75, lineWidth: 0.6)
@@ -2160,7 +2160,7 @@ final class PicShelfStartupCoverView: UIView {
             drawSolidFacet([(100,144),(68,132),(88,128)], fill: 0x80f43f5e, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
             drawSolidFacet([(100,144),(132,132),(112,128)], fill: 0x8cc084fc, stroke: 0x80fbe0d4, alpha: 1.0, lineWidth: 0.5)
 
-            ctx.restore()
+            ctx.restoreGState()
         }
     }
 
