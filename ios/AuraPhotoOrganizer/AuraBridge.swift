@@ -259,7 +259,12 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         }
     }
 
-    // MARK: - Camera (Photos & Videos)
+    // MARK: - Camera (Photos & Videos — Front & Back, Flash Off by Default)
+
+    private func restorePlaybackAudioSession() {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
 
     private func openCamera() {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
@@ -267,47 +272,116 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
             return
         }
 
-        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+        let presentPickerOnMain: () -> Void = { [weak self] in
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                if granted {
-                    let picker = UIImagePickerController()
-                    picker.sourceType = .camera
-                    picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
-                    picker.videoQuality = .typeHigh
-                    picker.delegate = self
-                    picker.allowsEditing = false
-                    self.viewController?.present(picker, animated: true)
+                guard let self = self, let vc = self.viewController else { return }
+                // Pause any active playback and release playback audio session so video recording has clean mic access
+                self.webView?.evaluateJavaScript(
+                    "(function(){ try { var v = document.getElementById('detailVideo'); if (v && !v.paused) { if (typeof silenceIosAudioForPause === 'function') silenceIosAudioForPause(v); v.pause(); } } catch(_){} })();",
+                    completionHandler: nil
+                )
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
+                let picker = UIImagePickerController()
+                picker.sourceType = .camera
+                picker.mediaTypes = [UTType.image.identifier, UTType.movie.identifier]
+                picker.cameraCaptureMode = .photo
+                picker.videoQuality = .typeHigh
+                picker.videoExportPreset = AVAssetExportPresetPassthrough
+                picker.videoMaximumDuration = 86400
+                // Disable Auto/Retina Flash on BOTH front and rear cameras by default to avoid blinding screen flash
+                if UIImagePickerController.isCameraDeviceAvailable(.front) {
+                    picker.cameraDevice = .front
+                    picker.cameraFlashMode = .off
+                }
+                if UIImagePickerController.isCameraDeviceAvailable(.rear) {
+                    picker.cameraDevice = .rear
+                    picker.cameraFlashMode = .off
                 } else {
+                    picker.cameraFlashMode = .off
+                }
+                picker.delegate = self
+                picker.allowsEditing = false
+                picker.modalPresentationStyle = .fullScreen
+                vc.present(picker, animated: true)
+            }
+        }
+
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard let self = self else { return }
+            guard granted else {
+                DispatchQueue.main.async {
                     self.showAlert(title: "Camera Access Required", message: "Please enable Camera access in iOS Settings > PicShelf to capture photos and videos.")
                 }
+                return
+            }
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+                AVCaptureDevice.requestAccess(for: .audio) { _ in
+                    presentPickerOnMain()
+                }
+            } else {
+                presentPickerOnMain()
             }
         }
     }
 
     func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-        picker.dismiss(animated: true)
-
-        // Captured Video
+        // Captured Video (Front or Back Camera)
         if let mediaURL = info[.mediaURL] as? URL {
             let capturedAlbum = targetAlbumForImport
             targetAlbumForImport = nil
+            let ext = mediaURL.pathExtension.isEmpty ? "mov" : mediaURL.pathExtension.lowercased()
+            // Copy synchronously BEFORE dismissing picker (APFS CoW clone is <1ms) so iOS cannot delete tmp capture file
+            let stored = PicShelfMediaStore.shared.storeFileByCopying(from: mediaURL, ext: ext)
+            picker.dismiss(animated: true) { [weak self] in
+                self?.restorePlaybackAudioSession()
+            }
+            guard let stored = stored else {
+                showWebToast("Could not save captured video. Please try again.", durationMs: 3500)
+                return
+            }
             importQueue.async { [weak self] in
                 guard let self = self else { return }
-                let ext = mediaURL.pathExtension.isEmpty ? "mov" : mediaURL.pathExtension.lowercased()
                 let baseName = "Camera_Video_\(Int(Date().timeIntervalSince1970)).\(ext)"
-                if let item = self.ingestVideoFile(from: mediaURL, displayName: baseName) {
-                    self.emitImportBatch([item], targetAlbum: capturedAlbum)
-                    self.emitImportFinished(totalCount: 1, targetAlbum: capturedAlbum)
+                self.registerKnownSourceId(stored.sourceId)
+                let vmeta = PicShelfMediaStore.extractVideoMetadata(from: stored.fileURL, includeGps: self.isGpsMetadataEnabled)
+                var locDict = vmeta.location
+                if locDict == nil && self.isGpsMetadataEnabled, let loc = self.lastKnownLocation {
+                    let lat = loc.coordinate.latitude
+                    let lon = loc.coordinate.longitude
+                    let displayCoords = String(format: "%.4f° %@, %.4f° %@", abs(lat), lat >= 0 ? "N" : "S", abs(lon), lon >= 0 ? "E" : "W")
+                    locDict = ["latitude": lat, "longitude": lon, "displayCoords": displayCoords, "place": "", "city": "", "country": ""]
                 }
+                var item: [String: Any] = [
+                    "displayName": baseName,
+                    "mediaType": "video",
+                    "fileSize": stored.size,
+                    "duration": vmeta.duration > 0 ? round(vmeta.duration) : 1,
+                    "createdAt": vmeta.createdAt ?? (Date().timeIntervalSince1970 * 1000.0),
+                    "tarEntry": [
+                        "nativeSourceId": stored.sourceId,
+                        "offset": 0,
+                        "size": stored.size,
+                        "baseName": baseName
+                    ]
+                ]
+                if let loc = locDict { item["location"] = loc }
+                if let cam = vmeta.cameraModel { item["cameraModel"] = cam }
+                self.emitImportBatch([item], targetAlbum: capturedAlbum)
+                self.emitImportFinished(totalCount: 1, targetAlbum: capturedAlbum)
+                PicShelfMediaStore.shared.unmarkImporting(stored.sourceId)
             }
             return
         }
 
-        // Captured Photo
-        guard let image = info[.originalImage] as? UIImage else { return }
+        // Captured Photo (Front or Back Camera)
+        let image = info[.originalImage] as? UIImage
         let capturedAlbum = targetAlbumForImport
         targetAlbumForImport = nil
+        picker.dismiss(animated: true) { [weak self] in
+            self?.restorePlaybackAudioSession()
+        }
+        guard let image = image else { return }
 
         importQueue.async { [weak self] in
             guard let self = self else { return }
@@ -345,7 +419,9 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     }
 
     func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-        picker.dismiss(animated: true)
+        picker.dismiss(animated: true) { [weak self] in
+            self?.restorePlaybackAudioSession()
+        }
     }
 
     // MARK: - Modern Native Photo Library Picker (Unlimited Multi-Select Photos + HEIC + Live Photos + Videos)
