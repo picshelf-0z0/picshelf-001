@@ -18,6 +18,12 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
     private var targetAlbumForImport: String?
     private var isGpsMetadataEnabled: Bool = true
     private let importQueue = DispatchQueue(label: "com.picshelf.ios.importQueue", qos: .userInitiated)
+    private let downloadQueue = DispatchQueue(label: "com.picshelf.ios.downloadQueue", qos: .userInitiated)
+    private let photosMirrorQueue = DispatchQueue(label: "com.picshelf.ios.photosMirror", qos: .utility)
+    private let downloadStateLock = NSLock()
+    private var stagedStreams: [String: URL] = [:]
+    private var cancelledDownloadSessions: Set<String> = []
+    private var cancelledDownloadItems: Set<String> = []
 
     // Sensors
     private let motionManager = CMMotionManager()
@@ -136,6 +142,62 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
 
         case "executeDownloadBatch":
             executeDownloadBatch(body: body)
+
+        case "beginDownloadStream":
+            if let token = body["token"] as? String {
+                beginDownloadStream(token: token)
+            }
+
+        case "appendDownloadStream":
+            if let token = body["token"] as? String,
+               let base64 = body["base64"] as? String {
+                appendDownloadStream(token: token, base64: base64)
+            }
+
+        case "sealDownloadStream":
+            break
+
+        case "discardDownloadStream":
+            if let token = body["token"] as? String {
+                discardDownloadStream(token: token)
+            }
+
+        case "executeDownloadChunk":
+            if let payloadJson = body["payloadJson"] as? String {
+                executeDownloadChunk(payloadJson: payloadJson)
+            }
+
+        case "resumeDownloadSession":
+            if let sessionId = body["sessionId"] as? String {
+                downloadStateLock.lock()
+                cancelledDownloadSessions.remove(sessionId)
+                downloadStateLock.unlock()
+            }
+
+        case "cancelDownloadSession":
+            if let sessionId = body["sessionId"] as? String {
+                downloadStateLock.lock()
+                cancelledDownloadSessions.insert(sessionId)
+                downloadStateLock.unlock()
+            }
+
+        case "cancelDownloadItem":
+            if let itemId = body["itemId"] as? String {
+                downloadStateLock.lock()
+                cancelledDownloadItems.insert(itemId)
+                downloadStateLock.unlock()
+            }
+
+        case "discardCancelledVideoDownload":
+            if let uri = body["uri"] as? String, !uri.isEmpty {
+                downloadQueue.async {
+                    if let url = URL(string: uri), url.isFileURL {
+                        try? FileManager.default.removeItem(at: url)
+                    } else if FileManager.default.fileExists(atPath: uri) {
+                        try? FileManager.default.removeItem(atPath: uri)
+                    }
+                }
+            }
 
         case "downloadZip":
             if let dataUrl = body["dataUrl"] as? String,
@@ -1119,36 +1181,415 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         viewController?.present(activityVC, animated: true)
     }
 
-    // MARK: - Save Photo to Apple Photos Library
+    // MARK: - Superfast Native iOS Download Engine (Files › On My iPhone › PicShelf + Optional Apple Photos Mirror)
 
-    private func downloadPhoto(dataUrl: String, fileName: String) {
-        guard let image = base64ToImage(dataUrl: dataUrl) else { return }
+    private func documentsRootDirectory() -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        try? fm.createDirectory(at: docs, withIntermediateDirectories: true)
+        return docs
+    }
 
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                if status == .authorized || status == .limited {
-                    PHPhotoLibrary.shared().performChanges({
-                        PHAssetChangeRequest.creationRequestForAsset(from: image)
-                    }) { success, error in
-                        DispatchQueue.main.async {
-                            if success {
-                                let gen = UINotificationFeedbackGenerator()
-                                gen.notificationOccurred(.success)
-                                self.showAlert(title: "Saved to Photos", message: "Photo was successfully saved to your Apple Photos library!")
-                            } else {
-                                self.showAlert(title: "Save Failed", message: error?.localizedDescription ?? "Could not save photo.")
-                            }
-                        }
-                    }
-                } else {
-                    self.showAlert(title: "Photos Access Required", message: "Please enable Photos permission in iOS Settings to save photos directly to your camera roll.")
-                }
+    private func resolveExportDirectory(relativePath: String) -> (dirURL: URL, displayPath: String, albumTitle: String) {
+        var cleaned = relativePath.replacingOccurrences(of: "\\", with: "/")
+        for prefix in ["Pictures/", "Movies/", "Music/"] {
+            if cleaned.hasPrefix(prefix) {
+                cleaned = String(cleaned.dropFirst(prefix.count))
+            }
+        }
+        if cleaned == "PicShelf" || cleaned == "PicShelf/" {
+            cleaned = ""
+        } else if cleaned.hasPrefix("PicShelf/") {
+            cleaned = String(cleaned.dropFirst("PicShelf/".count))
+        }
+        let segments = cleaned
+            .split(separator: "/")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "." && $0 != ".." }
+
+        let root = documentsRootDirectory()
+        var target = root
+        for seg in segments {
+            target = target.appendingPathComponent(seg, isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+
+        let displaySub = segments.isEmpty ? "PicShelf/" : "PicShelf/\(segments.joined(separator: "/"))/"
+        let albumTitle = segments.first ?? "PicShelf"
+        return (target, "Files › On My iPhone › \(displaySub)", albumTitle)
+    }
+
+    private func uniqueDestinationURL(in dirURL: URL, fileName: String) -> (url: URL, finalName: String) {
+        let fm = FileManager.default
+        let safeName = (fileName as NSString).lastPathComponent
+        let cleanName = safeName.isEmpty ? "PicShelf_media.jpg" : safeName
+        var candidate = dirURL.appendingPathComponent(cleanName)
+        if !fm.fileExists(atPath: candidate.path) {
+            return (candidate, cleanName)
+        }
+        let base = (cleanName as NSString).deletingPathExtension
+        let ext = (cleanName as NSString).pathExtension
+        var counter = 1
+        while counter < 10000 {
+            let nextName = ext.isEmpty ? "\(base) (\(counter))" : "\(base) (\(counter)).\(ext)"
+            candidate = dirURL.appendingPathComponent(nextName)
+            if !fm.fileExists(atPath: candidate.path) {
+                return (candidate, nextName)
+            }
+            counter += 1
+        }
+        let fallbackName = ext.isEmpty ? "\(base)_\(Int(Date().timeIntervalSince1970))" : "\(base)_\(Int(Date().timeIntervalSince1970)).\(ext)"
+        return (dirURL.appendingPathComponent(fallbackName), fallbackName)
+    }
+
+    private func beginDownloadStream(token: String) {
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("ps_dl_\(token).bin")
+            FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
+            self.downloadStateLock.lock()
+            self.stagedStreams[token] = tmpURL
+            self.downloadStateLock.unlock()
+        }
+    }
+
+    private func appendDownloadStream(token: String, base64: String) {
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.downloadStateLock.lock()
+            let fileURL = self.stagedStreams[token]
+            self.downloadStateLock.unlock()
+            guard let url = fileURL,
+                  let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+                  let fh = try? FileHandle(forWritingTo: url) else { return }
+            defer { try? fh.close() }
+            _ = try? fh.seekToEnd()
+            fh.write(data)
+        }
+    }
+
+    private func discardDownloadStream(token: String) {
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.downloadStateLock.lock()
+            let url = self.stagedStreams.removeValue(forKey: token)
+            self.downloadStateLock.unlock()
+            if let url = url {
+                try? FileManager.default.removeItem(at: url)
             }
         }
     }
 
-    // MARK: - Production-Grade Download Batch Manager (Section 14: iOS PhotoKit)
+    private func isDownloadCancelled(sessionId: String, itemId: String) -> Bool {
+        downloadStateLock.lock()
+        let cancelled = cancelledDownloadSessions.contains(sessionId) || cancelledDownloadItems.contains(itemId)
+        downloadStateLock.unlock()
+        return cancelled
+    }
+
+    private func resolveBundleAssetURL(_ rawAssetPath: String) -> URL? {
+        var rel = rawAssetPath
+        if rel.hasPrefix("file:///android_asset/web/") {
+            rel = String(rel.dropFirst("file:///android_asset/web/".count))
+        } else if rel.hasPrefix("web/") {
+            rel = String(rel.dropFirst("web/".count))
+        }
+        guard let root = Bundle.main.resourceURL else { return nil }
+        let candidates = [
+            root.appendingPathComponent("web").appendingPathComponent(rel),
+            root.appendingPathComponent(rel)
+        ]
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func exportVideoWithEditsIfNeeded(from srcURL: URL, to dstURL: URL, videoEdit: [String: Any]) -> Bool {
+        let trimStart = (videoEdit["trimStart"] as? NSNumber)?.doubleValue
+        let trimEnd = (videoEdit["trimEnd"] as? NSNumber)?.doubleValue
+        let mute = (videoEdit["mute"] as? Bool) ?? false
+        let needsTrim = (trimStart != nil && trimStart! > 0.05) || (trimEnd != nil && trimEnd! > 0.05)
+        guard needsTrim || mute else { return false }
+
+        let asset = AVURLAsset(url: srcURL)
+        let durSec = CMTimeGetSeconds(asset.duration)
+        guard durSec.isFinite && durSec > 0 else { return false }
+
+        let startSec = max(0, min(trimStart ?? 0, durSec - 0.05))
+        let endSec = (trimEnd != nil && trimEnd! > startSec) ? min(trimEnd!, durSec) : durSec
+        let timeRange = CMTimeRange(
+            start: CMTime(seconds: startSec, preferredTimescale: 600),
+            duration: CMTime(seconds: max(0.1, endSec - startSec), preferredTimescale: 600)
+        )
+
+        let composition = AVMutableComposition()
+        do {
+            if let vTrack = asset.tracks(withMediaType: .video).first,
+               let compV = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                try compV.insertTimeRange(timeRange, of: vTrack, at: .zero)
+                compV.preferredTransform = vTrack.preferredTransform
+            }
+            if !mute,
+               let aTrack = asset.tracks(withMediaType: .audio).first,
+               let compA = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
+                try compA.insertTimeRange(timeRange, of: aTrack, at: .zero)
+            }
+        } catch {
+            return false
+        }
+
+        let ext = dstURL.pathExtension.lowercased()
+        let fileType: AVFileType = (ext == "mov") ? .mov : .mp4
+        guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough)
+                ?? AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            return false
+        }
+        exporter.outputURL = dstURL
+        exporter.outputFileType = fileType
+        exporter.shouldOptimizeForNetworkUse = true
+
+        let sem = DispatchSemaphore(value: 0)
+        exporter.exportAsynchronously { sem.signal() }
+        _ = sem.wait(timeout: .now() + 180)
+        return exporter.status == .completed && FileManager.default.fileExists(atPath: dstURL.path)
+    }
+
+    private func sendNativeChunkCallback(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+              let json = String(data: data, encoding: .utf8) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript("window.NativeDownloads && window.NativeDownloads.onChunk(\(json));", completionHandler: nil)
+        }
+    }
+
+    private func executeDownloadChunk(payloadJson: String) {
+        guard let data = payloadJson.data(using: .utf8),
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let requestId = body["requestId"] as? String,
+              let sessionId = body["sessionId"] as? String,
+              let items = body["items"] as? [[String: Any]] else { return }
+
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            var results: [[String: Any]] = []
+            var photosToMirror: [(url: URL, isVideo: Bool, albumName: String)] = []
+            var totalExpectedBytes: Int64 = 0
+            for item in items {
+                totalExpectedBytes += (item["expectedSize"] as? NSNumber)?.int64Value ?? 0
+            }
+            var cumulativeWritten: Int64 = 0
+
+            for item in items {
+                let itemId = item["id"] as? String ?? UUID().uuidString
+                if self.isDownloadCancelled(sessionId: sessionId, itemId: itemId) {
+                    results.append(["id": itemId, "success": false, "cancelled": true])
+                    continue
+                }
+
+                let rawFileName = item["fileName"] as? String ?? "PicShelf_media.jpg"
+                let relativePath = item["relativePath"] as? String ?? "PicShelf/"
+                let mime = item["mime"] as? String ?? "application/octet-stream"
+                let source = item["source"] as? [String: Any] ?? [:]
+                let videoEdit = item["videoEdit"] as? [String: Any]
+
+                let destInfo = self.resolveExportDirectory(relativePath: relativePath)
+                let unique = self.uniqueDestinationURL(in: destInfo.dirURL, fileName: rawFileName)
+                let dstURL = unique.url
+
+                var wroteSuccessfully = false
+                var failureReason: String? = nil
+
+                // Resolve input source file on disk (zero base64 overhead for native/asset sources!)
+                var sourceFileURL: URL? = nil
+                var shouldDeleteSourceTemp = false
+
+                if let stagedToken = source["staged"] as? String {
+                    self.downloadStateLock.lock()
+                    sourceFileURL = self.stagedStreams[stagedToken]
+                    self.downloadStateLock.unlock()
+                } else if let assetPath = source["asset"] as? String {
+                    sourceFileURL = self.resolveBundleAssetURL(assetPath)
+                } else if let token = source["token"] as? String,
+                          let kind = source["kind"] as? String,
+                          let offset = (source["offset"] as? NSNumber)?.uint64Value,
+                          let size = (source["size"] as? NSNumber)?.uint64Value {
+                    let method = (source["method"] as? NSNumber)?.intValue ?? 0
+                    let ext = (rawFileName as NSString).pathExtension.isEmpty ? "bin" : (rawFileName as NSString).pathExtension
+                    if let extracted = PicShelfMediaStore.shared.extractEntryToTempFile(sourceId: token, kind: kind, offset: offset, size: size, method: method, ext: ext) {
+                        sourceFileURL = extracted.url
+                        shouldDeleteSourceTemp = extracted.isTemporary
+                    }
+                } else if let exported = source["exported"] as? [String: Any],
+                          let uriStr = exported["uri"] as? String {
+                    if let u = URL(string: uriStr), u.isFileURL, FileManager.default.fileExists(atPath: u.path) {
+                        sourceFileURL = u
+                    } else if FileManager.default.fileExists(atPath: uriStr) {
+                        sourceFileURL = URL(fileURLWithPath: uriStr)
+                    }
+                }
+
+                defer {
+                    if shouldDeleteSourceTemp, let tmp = sourceFileURL {
+                        try? FileManager.default.removeItem(at: tmp)
+                    }
+                }
+
+                if let srcURL = sourceFileURL, FileManager.default.fileExists(atPath: srcURL.path) {
+                    if mime.hasPrefix("video/"), let edit = videoEdit, !edit.isEmpty {
+                        if self.exportVideoWithEditsIfNeeded(from: srcURL, to: dstURL, videoEdit: edit) {
+                            wroteSuccessfully = true
+                        }
+                    }
+                    if !wroteSuccessfully {
+                        do {
+                            if FileManager.default.fileExists(atPath: dstURL.path) {
+                                try FileManager.default.removeItem(at: dstURL)
+                            }
+                            try FileManager.default.copyItem(at: srcURL, to: dstURL)
+                            wroteSuccessfully = true
+                        } catch {
+                            failureReason = error.localizedDescription
+                        }
+                    }
+                } else {
+                    failureReason = "Source media unavailable"
+                }
+
+                if wroteSuccessfully,
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: dstURL.path),
+                   let writtenSize = (attrs[.size] as? NSNumber)?.int64Value,
+                   writtenSize > 0 {
+                    cumulativeWritten += writtenSize
+                    let isVideo = mime.hasPrefix("video/")
+                    let isImage = mime.hasPrefix("image/")
+                    let extLower = dstURL.pathExtension.lowercased()
+                    // Queue Apple Photos mirror for images & iOS-compatible videos (.mp4/.mov/.m4v)
+                    if isImage || (isVideo && (extLower == "mp4" || extLower == "mov" || extLower == "m4v")) {
+                        photosToMirror.append((url: dstURL, isVideo: isVideo, albumName: destInfo.albumTitle))
+                    }
+                    let itemRes: [String: Any] = [
+                        "id": itemId,
+                        "success": true,
+                        "fileSize": writtenSize,
+                        "fileName": unique.finalName,
+                        "displayPath": destInfo.displayPath,
+                        "uri": dstURL.absoluteString,
+                        "mime": mime
+                    ]
+                    results.append(itemRes)
+                    if items.count > 1 {
+                        self.sendNativeChunkCallback([
+                            "requestId": requestId,
+                            "sessionId": sessionId,
+                            "progress": true,
+                            "results": [itemRes],
+                            "bytesWritten": cumulativeWritten,
+                            "totalBytes": max(totalExpectedBytes, cumulativeWritten)
+                        ])
+                    }
+                } else {
+                    try? FileManager.default.removeItem(at: dstURL)
+                    results.append([
+                        "id": itemId,
+                        "success": false,
+                        "error": failureReason ?? "Failed to write file"
+                    ])
+                }
+            }
+
+            // Deliver final verified chunk result immediately (superfast UI completion!)
+            self.sendNativeChunkCallback([
+                "requestId": requestId,
+                "sessionId": sessionId,
+                "results": results
+            ])
+
+            if results.contains(where: { ($0["success"] as? Bool) == true }) {
+                DispatchQueue.main.async {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+            }
+
+            // Mirror saved images/videos to Apple Photos Library silently in background (never blocks, never nags!)
+            if !photosToMirror.isEmpty {
+                self.mirrorSavedFilesToApplePhotosSilently(photosToMirror)
+            }
+        }
+    }
+
+    private func mirrorSavedFilesToApplePhotosSilently(_ entries: [(url: URL, isVideo: Bool, albumName: String)]) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .authorized || status == .limited {
+            performBatchedPhotosMirror(entries)
+        } else if status == .notDetermined {
+            let promptKey = "picshelf_ios_photos_prompted_v1"
+            if !UserDefaults.standard.bool(forKey: promptKey) {
+                UserDefaults.standard.set(true, forKey: promptKey)
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] newStatus in
+                    if newStatus == .authorized || newStatus == .limited {
+                        self?.performBatchedPhotosMirror(entries)
+                    }
+                }
+            }
+        }
+        // If .denied or .restricted: NEVER show a blocking popup! Files are already saved in Files › On My iPhone › PicShelf.
+    }
+
+    private func performBatchedPhotosMirror(_ entries: [(url: URL, isVideo: Bool, albumName: String)]) {
+        photosMirrorQueue.async { [weak self] in
+            guard let self = self else { return }
+            var byAlbum: [String: [(url: URL, isVideo: Bool)]] = [:]
+            for e in entries {
+                let name = e.albumName.isEmpty ? "PicShelf" : e.albumName
+                byAlbum[name, default: []].append((e.url, e.isVideo))
+            }
+            for (albumName, mediaList) in byAlbum {
+                let sem = DispatchSemaphore(value: 0)
+                self.findOrCreateAlbum(named: albumName) { collection in
+                    PHPhotoLibrary.shared().performChanges({
+                        var placeholders: [PHObjectPlaceholder] = []
+                        for item in mediaList {
+                            guard FileManager.default.fileExists(atPath: item.url.path) else { continue }
+                            let req: PHAssetChangeRequest? = item.isVideo
+                                ? PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: item.url)
+                                : PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: item.url)
+                            if let ph = req?.placeholderForCreatedAsset {
+                                placeholders.append(ph)
+                            }
+                        }
+                        if let collection = collection, !placeholders.isEmpty,
+                           let albumReq = PHAssetCollectionChangeRequest(for: collection) {
+                            albumReq.addAssets(placeholders as NSArray)
+                        }
+                    }) { _, _ in
+                        sem.signal()
+                    }
+                }
+                _ = sem.wait(timeout: .now() + 60)
+            }
+        }
+    }
+
+    // MARK: - Legacy Single Photo / Batch Fallbacks (also save to Files › On My iPhone › PicShelf, never nag!)
+
+    private func downloadPhoto(dataUrl: String, fileName: String) {
+        guard let image = base64ToImage(dataUrl: dataUrl),
+              let jpeg = image.jpegData(compressionQuality: 0.92) else { return }
+
+        downloadQueue.async { [weak self] in
+            guard let self = self else { return }
+            let dest = self.resolveExportDirectory(relativePath: "PicShelf/")
+            let unique = self.uniqueDestinationURL(in: dest.dirURL, fileName: fileName.isEmpty ? "PicShelf_photo.jpg" : fileName)
+            do {
+                try jpeg.write(to: unique.url, options: .atomic)
+                self.mirrorSavedFilesToApplePhotosSilently([(url: unique.url, isVideo: false, albumName: "PicShelf")])
+                DispatchQueue.main.async {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+                self.showWebToast("Saved to \(dest.displayPath)", durationMs: 3500)
+            } catch {
+                self.showWebToast("Save failed: \(error.localizedDescription)", durationMs: 4000)
+            }
+        }
+    }
 
     private func findOrCreateAlbum(named albumName: String, completion: @escaping (PHAssetCollection?) -> Void) {
         let fetchOptions = PHFetchOptions()
@@ -1178,79 +1619,48 @@ class AuraBridge: NSObject, WKScriptMessageHandler, UIImagePickerControllerDeleg
         guard let sessionId = body["sessionId"] as? String,
               let items = body["items"] as? [[String: Any]] else { return }
 
-        let sourceType = body["sourceType"] as? String ?? "gallery"
         let generalAlbumName = body["albumName"] as? String
 
-        PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
+        downloadQueue.async { [weak self] in
             guard let self = self else { return }
-            guard status == .authorized || status == .limited else {
-                DispatchQueue.main.async {
-                    self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeSessionFinished('\(sessionId)', 0, \(items.count));", completionHandler: nil)
-                    self.showAlert(title: "Photos Access Required", message: "Please enable Photos permission in iOS Settings to export photos directly to your Apple Photos library.")
+            var successCount = 0
+            var failedCount = 0
+            let total = items.count
+            var toMirror: [(url: URL, isVideo: Bool, albumName: String)] = []
+
+            for (idx, item) in items.enumerated() {
+                let assetId = item["assetId"] as? String ?? "asset_\(idx)"
+                let dataUrl = item["dataUrl"] as? String ?? ""
+                let fileName = (item["fileName"] as? String) ?? (item["displayName"] as? String) ?? "PicShelf_\(idx + 1).jpg"
+                let relPath = (item["relativePath"] as? String) ?? (generalAlbumName != nil ? "PicShelf/\(generalAlbumName!)/" : "PicShelf/")
+                let dest = self.resolveExportDirectory(relativePath: relPath)
+                let unique = self.uniqueDestinationURL(in: dest.dirURL, fileName: fileName)
+
+                if let image = self.base64ToImage(dataUrl: dataUrl),
+                   let jpeg = image.jpegData(compressionQuality: 0.92),
+                   (try? jpeg.write(to: unique.url, options: .atomic)) != nil {
+                    successCount += 1
+                    toMirror.append((url: unique.url, isVideo: false, albumName: dest.albumTitle))
+                    DispatchQueue.main.async {
+                        self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', true, null, \(idx + 1), \(total));", completionHandler: nil)
+                    }
+                } else {
+                    failedCount += 1
+                    DispatchQueue.main.async {
+                        self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', false, 'Invalid image data', \(idx + 1), \(total));", completionHandler: nil)
+                    }
                 }
-                return
             }
 
-            DispatchQueue.global(qos: .userInitiated).async {
-                var successCount = 0
-                var failedCount = 0
-                let total = items.count
-
-                var index = 0
-                func processNext() {
-                    if index >= total {
-                        DispatchQueue.main.async {
-                            self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeSessionFinished('\(sessionId)', \(successCount), \(failedCount));", completionHandler: nil)
-                            if successCount > 0 {
-                                let gen = UINotificationFeedbackGenerator()
-                                gen.notificationOccurred(.success)
-                            }
-                        }
-                        return
-                    }
-
-                    let item = items[index]
-                    let assetId = item["assetId"] as? String ?? "asset_\(index)"
-                    let dataUrl = item["dataUrl"] as? String ?? ""
-                    let itemAlbumName = (item["albumName"] as? String) ?? generalAlbumName
-                    let curIdx = index + 1
-                    index += 1
-
-                    guard let image = self.base64ToImage(dataUrl: dataUrl) else {
-                        failedCount += 1
-                        DispatchQueue.main.async {
-                            self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', false, 'Invalid image data', \(curIdx), \(total));", completionHandler: nil)
-                        }
-                        processNext()
-                        return
-                    }
-
-                    let targetCollectionName = ((sourceType == "album" || sourceType == "multi_album") && !(itemAlbumName ?? "").isEmpty) ? itemAlbumName! : "PicShelf"
-                    self.findOrCreateAlbum(named: targetCollectionName) { collection in
-                        PHPhotoLibrary.shared().performChanges({
-                            let createAssetRequest = PHAssetChangeRequest.creationRequestForAsset(from: image)
-                            if let collection = collection,
-                               let placeholder = createAssetRequest.placeholderForCreatedAsset,
-                               let albumChangeRequest = PHAssetCollectionChangeRequest(for: collection) {
-                                albumChangeRequest.addAssets([placeholder] as NSArray)
-                            }
-                        }) { success, error in
-                            if success {
-                                successCount += 1
-                            } else {
-                                failedCount += 1
-                            }
-                            let errMsg = error?.localizedDescription.replacingOccurrences(of: "'", with: "\\'")
-                            let errArg = errMsg != nil ? "'\(errMsg!)'" : "null"
-                            DispatchQueue.main.async {
-                                self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeItemProgress('\(sessionId)', '\(assetId)', \(success), \(errArg), \(curIdx), \(total));", completionHandler: nil)
-                            }
-                            processNext()
-                        }
-                    }
+            DispatchQueue.main.async {
+                self.webView?.evaluateJavaScript("window.DownloadManager && window.DownloadManager.onNativeSessionFinished('\(sessionId)', \(successCount), \(failedCount));", completionHandler: nil)
+                if successCount > 0 {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
                 }
+            }
 
-                processNext()
+            if !toMirror.isEmpty {
+                self.mirrorSavedFilesToApplePhotosSilently(toMirror)
             }
         }
     }

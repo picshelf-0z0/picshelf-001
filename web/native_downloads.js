@@ -304,7 +304,9 @@
           if(item.cancelRequested){if(source.staged)window.AndroidApp.discardDownloadStream(source.staged);record(item,{success:false,cancelled:true});continue;}
           if(session.status==='cancelled'){if(source.staged)window.AndroidApp.discardDownloadStream(source.staged);item.status='pending';break;}
           const directory=info.mime.startsWith('video/')?'Movies':info.mime.startsWith('audio/')?'Music':'Pictures';
-          const displayPath=directory+'/'+session.destinationRelativePath.replace(/^Pictures\//,'');
+          const displayPath=window.isNativeIOS
+            ? 'Files › On My iPhone › '+session.destinationRelativePath.replace(/^Pictures\//,'')
+            : directory+'/'+session.destinationRelativePath.replace(/^Pictures\//,'');
           if(!destinations.has(displayPath)){destinations.add(displayPath);session.exportDisplayPath=[...destinations].join(' · ');}
           const expectedSize=source.expectedSize||photo.zipEntry?.uncompSize||photo.tarEntry?.size||photo.fileBlob?.size||photo.fileSize||0;
           references.set(item.id,item);batch.push({id:item.id,fileName:item.filename,relativePath:item.destination,mime:previous?.mime || info.mime,expectedSize,source,...(renderVideo ? {videoEdit:edit} : {})});
@@ -326,7 +328,7 @@
     const snapshot={...photo,tarEntry:photo.tarEntry?{...photo.tarEntry}:undefined,zipEntry:photo.zipEntry?{...photo.zipEntry}:undefined};
     let fileName=(photo.displayName||'PicShelf_media').replace(/[/\\:*?"<>|\x00-\x1F]/g,'_');
     if(!fileName.toLowerCase().endsWith('.'+info.ext))fileName+='.'+info.ext;
-    const session={sessionId:'single-'+Date.now()+'-'+(++sequence),kind:'media',status:'queued',fileName,displayPath:(info.mime.startsWith('audio/')?'Music':'Pictures')+'/PicShelf/',cancellations:new Set(),promise:null};
+    const session={sessionId:'single-'+Date.now()+'-'+(++sequence),kind:'media',status:'queued',fileName,displayPath:window.isNativeIOS?'Files › On My iPhone › PicShelf/':((info.mime.startsWith('audio/')?'Music':'Pictures')+'/PicShelf/'),cancellations:new Set(),promise:null};
     session.cancel=()=>{if(['completed','failed','cancelled'].includes(session.status))return;session.status='cancelled';session.cancellations.forEach(cancel=>cancel());session.cancellations.clear();try{window.AndroidApp.cancelDownloadSession?.(session.sessionId);}catch(_){}};
     singleJobs.set(key,session);singleStatus(session,'queued');
     session.promise=(async()=>{let source;try{
@@ -526,7 +528,7 @@
     const mime = info.mime;
     let fileName = (photo.displayName || 'PicShelf_video').replace(/[/\\:*?"<>|\x00-\x1F]/g, '_');
     if (!fileName.toLowerCase().endsWith('.' + ext)) fileName += '.' + ext;
-    const session = { sessionId: 'single-' + Date.now() + '-' + (++sequence), status: 'queued', fileName, displayPath: 'Movies/PicShelf/', cancellations: new Set(), promise: null };
+    const session = { sessionId: 'single-' + Date.now() + '-' + (++sequence), status: 'queued', fileName, displayPath: window.isNativeIOS ? 'Files › On My iPhone › PicShelf/' : 'Movies/PicShelf/', cancellations: new Set(), promise: null };
     session.cancel = () => {
       if (['completed', 'failed', 'cancelled'].includes(session.status)) return;
       session.status = 'cancelled';

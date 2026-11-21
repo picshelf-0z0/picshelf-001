@@ -640,7 +640,9 @@
       const directory=mime.startsWith('video/')?'Movies':mime.startsWith('audio/')?'Music':'Pictures';
       if(!directories.has(directory)) {
         directories.add(directory);
-        session.exportDisplayPath=[...directories].map(name=>name+'/'+destinationRelativePath).join(' · ');
+        session.exportDisplayPath=window.isNativeIOS
+          ? 'Files › On My iPhone › '+destinationRelativePath
+          : [...directories].map(name=>name+'/'+destinationRelativePath).join(' · ');
       }
       items.push({ id:`item_${sessionId}_${index}`, sessionId, assetId:photo.id || `asset_${Date.now()}_${index}`,
         sourceAlbumId:options.albumId || null, sourceAlbumName:albumName,

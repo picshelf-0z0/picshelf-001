@@ -1163,10 +1163,46 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 }
             };
 
+            let iosStreamSeq = 0;
             const nativeBridge = {
                 openCamera: function() { send('openCamera'); },
                 openGallery: function() { send('openGallery'); },
                 openGalleryForAlbum: function(album) { send('openGalleryForAlbum', { album: album }); },
+                beginDownloadStream: function(sessionId, expectedSize) {
+                    iosStreamSeq++;
+                    var token = 'ios_stream_' + Date.now() + '_' + iosStreamSeq;
+                    send('beginDownloadStream', { token: token, sessionId: String(sessionId || ''), expectedSize: Number(expectedSize || 0) });
+                    return token;
+                },
+                appendDownloadStream: function(token, base64) {
+                    send('appendDownloadStream', { token: String(token || ''), base64: String(base64 || '') });
+                    return true;
+                },
+                sealDownloadStream: function(token) {
+                    send('sealDownloadStream', { token: String(token || '') });
+                    return true;
+                },
+                discardDownloadStream: function(token) {
+                    send('discardDownloadStream', { token: String(token || '') });
+                },
+                executeDownloadChunk: function(payloadJson) {
+                    send('executeDownloadChunk', { payloadJson: typeof payloadJson === 'string' ? payloadJson : JSON.stringify(payloadJson || {}) });
+                },
+                resumeDownloadSession: function(sessionId) {
+                    send('resumeDownloadSession', { sessionId: String(sessionId || '') });
+                },
+                cancelDownloadSession: function(sessionId) {
+                    send('cancelDownloadSession', { sessionId: String(sessionId || '') });
+                },
+                cancelDownloadItem: function(sessionId, itemId) {
+                    send('cancelDownloadItem', { sessionId: String(sessionId || ''), itemId: String(itemId || '') });
+                    return true;
+                },
+                acknowledgeVideoDownloadResult: function(sessionId) { return true; },
+                discardCancelledVideoDownload: function(sessionId, uri) {
+                    send('discardCancelledVideoDownload', { sessionId: String(sessionId || ''), uri: String(uri || '') });
+                    return true;
+                },
                 validateArchiveSources: function(idsJson) {
                     try {
                         var arr = typeof idsJson === 'string' ? JSON.parse(idsJson) : (idsJson || []);
