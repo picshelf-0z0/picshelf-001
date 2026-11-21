@@ -511,8 +511,8 @@
   const CHEEK_SHADES  = ['#f472b6', '#fb7185', '#fb923c', '#e879f9', '#d97706', '#f43f5e'];
   const LIP_SHADES    = ['#e11d48', '#ec4899', '#be123c', '#f97316', '#9d174d', '#d97757'];
   const SHADOW_SHADES = ['#b45309', '#be185d', '#7c3aed', '#d97706', '#374151', '#c2410c'];
-  const BROW_SHADES   = ['#1c1917', '#3b2618', '#5c3a21', '#7c5333', '#a17a50', '#8b3a2b', '#4b5563'];
-  const HAIR_SHADES   = ['#1c1917', '#4a2c18', '#8b3a2b', '#d4a359', '#e88d9c', '#7f1d1d', '#9333ea', '#1d4ed8'];
+  const BROW_SHADES   = ['#181516', '#3b2618', '#6b4226', '#8d5b34', '#c9a66b', '#9b3b24', '#5b616e'];
+  const HAIR_SHADES   = ['#181516', '#4a2c18', '#9b3b24', '#ebd089', '#f3e4bc', '#e88d9c', '#7f1d1d', '#9333ea', '#1d4ed8'];
   const BROW_STYLES   = [
     { id: 'original',  label: 'Natural' },
     { id: 'arched',    label: 'High Arch' },
@@ -782,10 +782,10 @@
     }
     meanD /= N;
 
-    // Compute styled target spine & thickness
+    // Compute styled target spine & thickness with smooth anatomically realistic silhouette differences
     const targetSpine = [];
     const targetThick = [];
-    const liftUnit = interOcular * 0.092 * shapeAmt;
+    const liftUnit = interOcular * 0.115 * shapeAmt;
     for (let k = 0; k < N; k++) {
       const t = k / (N - 1);
       const [ox, oy, os, od] = origSpine[k];
@@ -793,34 +793,33 @@
       let thickMul = 1.0;
 
       if (styleId === 'arched') {
-        const archBell = Math.exp(-Math.pow((t - 0.64) / 0.22, 2));
-        deltaD = -liftUnit * 1.12 * archBell + liftUnit * 0.14 * Math.pow(t, 2.4);
+        // Classic sculpted high-arch brow: smooth graceful lift at outer-third peak (t=0.62)
+        const archBell = Math.exp(-Math.pow((t - 0.62) / 0.25, 2));
+        deltaD = -liftUnit * 1.05 * archBell + liftUnit * 0.12 * Math.pow(t, 2.4);
         thickMul = 1.0 - 0.16 * shapeAmt * t;
       } else if (styleId === 'soft_arch') {
-        const archBell = Math.exp(-Math.pow((t - 0.56) / 0.28, 2));
-        deltaD = -liftUnit * 0.75 * archBell;
-        thickMul = 1.0 + 0.08 * shapeAmt * (1 - t);
+        const archBell = Math.exp(-Math.pow((t - 0.55) / 0.28, 2));
+        deltaD = -liftUnit * 0.72 * archBell;
+        thickMul = 1.04 + 0.08 * shapeAmt * (1 - t);
       } else if (styleId === 'straight') {
-        // Smoothly pull brow toward a sleek youthful straight horizontal line
-        const straightD = origSpine[0][3] + (origSpine[N - 1][3] - origSpine[0][3]) * t * 0.45;
-        deltaD = (straightD - od) * 0.65 * shapeAmt;
-        thickMul = 1.08 + 0.08 * shapeAmt;
+        const straightD = origSpine[0][3] + (origSpine[N - 1][3] - origSpine[0][3]) * t * 0.25;
+        deltaD = (straightD - od) * 0.80 * shapeAmt;
+        thickMul = 1.10 + 0.10 * shapeAmt;
       } else if (styleId === 'bold') {
-        const archBell = Math.exp(-Math.pow((t - 0.62) / 0.25, 2));
-        deltaD = -liftUnit * 0.48 * archBell;
-        thickMul = 1.18 + 0.28 * shapeAmt * (1 - 0.35 * t);
-      } else if (styleId === 'feathered') {
-        const archBell = Math.exp(-Math.pow((t - 0.55) / 0.30, 2));
+        const archBell = Math.exp(-Math.pow((t - 0.60) / 0.26, 2));
         deltaD = -liftUnit * 0.42 * archBell;
-        thickMul = 1.12 + 0.22 * shapeAmt;
+        thickMul = 1.22 + 0.30 * shapeAmt * (1 - 0.30 * t);
+      } else if (styleId === 'feathered') {
+        const archBell = Math.exp(-Math.pow((t - 0.56) / 0.30, 2));
+        deltaD = -liftUnit * 0.46 * archBell;
+        thickMul = 1.16 + 0.24 * shapeAmt;
       }
 
       const nd = od + deltaD;
       const nx = os * outX + nd * vx;
       const ny = os * outY + nd * vy;
       targetSpine.push([nx, ny, deltaD]);
-      // Always taper cleanly at the outer tail (t -> 1)
-      const tailTaper = t > 0.78 ? (1 - (t - 0.78) / 0.26) : 1.0;
+      const tailTaper = t > 0.78 ? (1 - (t - 0.78) / 0.25) : 1.0;
       targetThick.push(Math.max(1.5, origThick[k] * thickMul * clamp(tailTaper, 0.22, 1.0)));
     }
 
@@ -890,8 +889,9 @@
       dst[outIdx + 2] = (srcData[i00 + 2] * w00 + srcData[i10 + 2] * w10 + srcData[i01 + 2] * w01 + srcData[i11 + 2] * w11) | 0;
     };
 
-    const warps = [];  // push handles: { cx, cy, r, dx, dy, clampD?, vx?, vy? }
-    const zooms = [];  // radial expand handles: { cx, cy, rx, ry, amt, axisX?, axisY?, vertOnly? }
+    const warps = [];       // push handles: { cx, cy, r, dx, dy }
+    const browGroups = [];  // Shepard-normalized brow groups (guaranteed zero warp folding!)
+    const zooms = [];       // radial expand handles: { cx, cy, rx, ry, amt, vertOnly? }
 
     for (const face of faces) {
       const frame = computeFaceFrame(face, w, h);
@@ -966,7 +966,7 @@
         }
       }
 
-      // 5. Eyebrow Style Reshaping: smooth vertical Gaussian lift/straighten clamped strictly above eyelids!
+      // 5. Eyebrow Style Reshaping: Shepard-normalized smooth arch/straighten (GUARANTEED zero folding/ring artifacts even at 100%!)
       if (doBrow) {
         const shapeAmt = p.browShape / 100;
         const pairs = [
@@ -976,11 +976,12 @@
         for (const [bPts, eyeC, isLeft] of pairs) {
           const brow = analyzeBrowCurve(bPts, eyeC, isLeft, frame, w, h, p.browStyle, shapeAmt);
           if (!brow) continue;
-          const r = Math.max(10, brow.browLen * 0.34);
-          for (let k = 1; k < brow.targetSpine.length - 1; k += 2) {
-            const deltaD = brow.targetSpine[k][2];
-            if (Math.abs(deltaD) < 0.4) continue;
-            warps.push({
+          const r = Math.max(14, brow.browLen * 0.36);
+          const group = [];
+          for (let k = 1; k < brow.targetSpine.length - 1; k++) {
+            const deltaD = clamp(brow.targetSpine[k][2], -r * 0.42, r * 0.42);
+            if (Math.abs(deltaD) < 0.25) continue;
+            group.push({
               cx: brow.origSpine[k][0],
               cy: brow.origSpine[k][1],
               r,
@@ -991,11 +992,22 @@
               vy: brow.vy
             });
           }
+          if (group.length) browGroups.push(group);
+          if (p.browStyle === 'bold' || p.browStyle === 'feathered') {
+            const mid = brow.origSpine[3];
+            zooms.push({
+              cx: mid[0], cy: mid[1],
+              rx: Math.max(12, brow.browLen * 0.56),
+              ry: Math.max(8, brow.origThick[3] * 2.5),
+              amt: (p.browStyle === 'bold' ? 0.22 : 0.16) * shapeAmt,
+              vertOnly: true, vx: brow.vx, vy: brow.vy
+            });
+          }
         }
       }
     }
 
-    if (!warps.length && !zooms.length) return srcData;
+    if (!warps.length && !zooms.length && !browGroups.length) return srcData;
 
     // Compute union bounding box of all active warps & zooms for maximum speed
     let bx0 = w, by0 = h, bx1 = 0, by1 = 0;
@@ -1004,6 +1016,14 @@
       by0 = Math.min(by0, Math.floor(wp.cy - wp.r));
       bx1 = Math.max(bx1, Math.ceil(wp.cx + wp.r));
       by1 = Math.max(by1, Math.ceil(wp.cy + wp.r));
+    }
+    for (const grp of browGroups) {
+      for (const wp of grp) {
+        bx0 = Math.min(bx0, Math.floor(wp.cx - wp.r));
+        by0 = Math.min(by0, Math.floor(wp.cy - wp.r));
+        bx1 = Math.max(bx1, Math.ceil(wp.cx + wp.r));
+        by1 = Math.max(by1, Math.ceil(wp.cy + wp.r));
+      }
     }
     for (const zm of zooms) {
       bx0 = Math.min(bx0, Math.floor(zm.cx - zm.rx));
@@ -1025,14 +1045,33 @@
           if (d2 >= r2) continue;
           let fall = 1 - d2 / r2;
           fall = fall * fall;
-          if (wp.clampD != null) {
-            const curD = x * wp.vx + y * wp.vy;
-            if (curD >= wp.clampD) continue;
-            const guard = clamp((wp.clampD - curD) / (wp.r * 0.45), 0, 1);
-            fall *= guard;
-          }
           offX -= wp.dx * fall;
           offY -= wp.dy * fall;
+        }
+        // Shepard-normalized brow displacement prevents overlapping handles from EVER summing/folding!
+        for (let g = 0; g < browGroups.length; g++) {
+          const grp = browGroups[g];
+          let wSum = 0, gDx = 0, gDy = 0;
+          for (let k = 0; k < grp.length; k++) {
+            const wp = grp[k];
+            const rx = x - wp.cx, ry = y - wp.cy;
+            const d2 = rx * rx + ry * ry;
+            const r2 = wp.r * wp.r;
+            if (d2 >= r2) continue;
+            let fall = 1 - d2 / r2;
+            fall = fall * fall;
+            const curD = x * wp.vx + y * wp.vy;
+            if (curD >= wp.clampD) continue;
+            fall *= clamp((wp.clampD - curD) / (wp.r * 0.55), 0, 1);
+            wSum += fall;
+            gDx += wp.dx * fall;
+            gDy += wp.dy * fall;
+          }
+          if (wSum > 0) {
+            const norm = wSum > 1 ? (1 / wSum) : 1;
+            offX -= gDx * norm;
+            offY -= gDy * norm;
+          }
         }
         for (let k = 0; k < zooms.length; k++) {
           const zm = zooms[k];
@@ -1153,17 +1192,19 @@
           if (faceProt > 0.45) continue;
           const r = orig[i], g = orig[i + 1], bl = orig[i + 2];
           const sProb = skinProbability(r, g, bl);
-          if (sProb > 0.46) continue;
+          // Neck skin directly under chin uses strict skin rejection; warm brown hair highlights elsewhere get clean coverage!
+          const isNeckZone = (y > botFaceY && Math.abs(x - cx) < fw * 0.42);
+          if (sProb > (isNeckZone ? 0.38 : 0.72)) continue;
 
-          // Match hair using color distance + specular highlight tolerance (glossy strands are brighter than roots!)
+          // Match hair using color distance + generous specular highlight tolerance (eliminates dark patchy spots in Blonde!)
           const lum = 0.299 * r + 0.587 * g + 0.114 * bl;
           const dRgb = Math.hypot(r - hR, g - hG, bl - hB);
           const chromaDiff = Math.abs((r - lum) - (hR - hLum)) + Math.abs((g - lum) - (hG - hLum)) + Math.abs((bl - lum) - (hB - hLum));
-          const dEff = Math.min(dRgb, chromaDiff * 1.35 + Math.abs(lum - hLum) * 0.58);
-          if (dEff > 84) continue;
+          const dEff = Math.min(dRgb, chromaDiff * 1.15 + Math.abs(lum - hLum) * 0.48);
+          if (dEff > 106) continue;
 
           const minBg = distBg(r, g, bl);
-          if (minBg < 26) continue;
+          if (minBg < 24) continue;
 
           // Gently fade below collarbone in the center chest so dark t-shirts directly under the neck don't get tinted
           let shirtGuard = 1.0;
@@ -1171,10 +1212,11 @@
             shirtGuard = clamp(1 - (y - (botFaceY + fh * 0.24)) / (fh * 0.34), 0, 1);
           }
 
-          const hairSim = clamp(1 - dEff / 84, 0, 1);
-          const bgSep = clamp((minBg - 22) / 38, 0, 1);
-          const envW = clamp((1 - ed2) * 1.85, 0, 1);
-          const wAlpha = Math.round(hairSim * bgSep * envW * shirtGuard * (1 - faceProt) * (1 - sProb * 0.9) * 255);
+          const hairSim = clamp(1 - Math.max(0, dEff - 22) / 84, 0, 1);
+          const bgSep = clamp((minBg - 20) / 34, 0, 1);
+          const envW = clamp((1 - ed2) * 1.95, 0, 1);
+          const skinAtten = isNeckZone ? (1 - sProb * 0.95) : (1 - Math.max(0, sProb - 0.35) * 0.85);
+          const wAlpha = Math.round(hairSim * bgSep * envW * shirtGuard * (1 - faceProt) * skinAtten * 255);
           if (wAlpha > rawMask[i + 3]) {
             rawMask[i] = rawMask[i + 1] = rawMask[i + 2] = wAlpha;
             rawMask[i + 3] = wAlpha;
@@ -1182,7 +1224,17 @@
         }
       }
     }
-    return boxBlurRGBA(rawMask, w, h, Math.max(2, Math.round(Math.min(w, h) / 240)));
+    const blurred = boxBlurRGBA(rawMask, w, h, Math.max(3, Math.round(Math.min(w, h) / 165)));
+    // Attach average sampled hair luminance so Blonde/Platinum/Vibrant dyes normalize accurately across dark & light hair!
+    let lumSum = 0, lumN = 0;
+    for (let i = 0; i < blurred.length; i += 16) {
+      if (blurred[i] > 110) {
+        lumSum += 0.299 * orig[i] + 0.587 * orig[i + 1] + 0.114 * orig[i + 2];
+        lumN++;
+      }
+    }
+    blurred._meanLum = lumN > 10 ? (lumSum / lumN) : 55;
+    return blurred;
   }
 
   // Procedural photorealistic Mascara (tightline + 26 fanned curved lashes) & Winged Eyeliner
@@ -1256,32 +1308,29 @@
           }
           octx.stroke();
 
-          // 26 individual curved tapered upper eyelashes (fanned naturally from inner -> outer cat-eye sweep!)
-          const numLashes = 26;
+          // 30 individual curved tapered upper eyelashes (fanned naturally from inner -> outer cat-eye sweep!)
+          const numLashes = 30;
           for (let i = 0; i < numLashes; i++) {
-            const t = 0.08 + (i / (numLashes - 1)) * 0.91;
+            const t = 0.06 + (i / (numLashes - 1)) * 0.93;
             const [rx, ry] = samplePolyline(upper, t);
-            // Deterministic organic variation so lashes look fluttery, never mechanical
-            const jitter = 0.84 + 0.32 * Math.abs(Math.sin(i * 12.9898 + 4.14));
-            const fanOut = -0.18 + t * 0.88; // slight inward tilt near inner corner -> winged sweep at outer!
+            const jitter = 0.85 + 0.30 * Math.abs(Math.sin(i * 12.9898 + 4.14));
+            const fanOut = -0.18 + t * 0.92;
             let dirX = upX + outX * fanOut;
             let dirY = upY + outY * fanOut;
             const dl = Math.hypot(dirX, dirY) || 1;
             dirX /= dl; dirY /= dl;
 
-            const env = Math.pow(Math.sin(t * Math.PI), 0.65) * 0.72 + t * t * 0.52;
-            const lashLen = eyeW * (0.08 + 0.22 * env) * jitter * (0.55 + 0.45 * mascaraAmt);
+            const env = Math.pow(Math.sin(t * Math.PI), 0.62) * 0.74 + t * t * 0.58;
+            const lashLen = eyeW * (0.10 + 0.25 * env) * jitter * (0.55 + 0.45 * mascaraAmt);
 
-            // Slight upward curl on quadratic Bézier control point
-            const cpx = rx + (dirX * 0.55 - outX * 0.06) * lashLen;
-            const cpy = ry + (dirY * 0.55 - outY * 0.06) * lashLen;
+            const cpx = rx + (dirX * 0.54 - outX * 0.06) * lashLen;
+            const cpy = ry + (dirY * 0.54 - outY * 0.06) * lashLen;
             const tx = rx + dirX * lashLen;
             const ty = ry + dirY * lashLen;
 
-            // Draw tapered triangular-curved lash fiber (thicker at root, wispy fine tip)
-            const rootHalf = Math.max(0.45, eyeW * (0.011 + 0.008 * t) * (0.65 + 0.35 * mascaraAmt));
+            const rootHalf = Math.max(0.55, eyeW * (0.013 + 0.009 * t) * (0.65 + 0.35 * mascaraAmt));
             const perpX = -dirY * rootHalf, perpY = dirX * rootHalf;
-            octx.fillStyle = `rgba(15, 12, 15, ${(clamp(0.48 + 0.42 * t, 0.35, 0.9) * mascaraAmt).toFixed(3)})`;
+            octx.fillStyle = `rgba(12, 10, 14, ${(clamp(0.55 + 0.40 * t, 0.42, 0.94) * mascaraAmt).toFixed(3)})`;
             octx.beginPath();
             octx.moveTo(rx - perpX, ry - perpY);
             octx.quadraticCurveTo(cpx, cpy, tx, ty);
@@ -1292,13 +1341,13 @@
 
           // Subtle wispy lower outer-corner lashes
           if (lower.length >= 3) {
-            const nLow = 9;
-            octx.strokeStyle = `rgba(22, 18, 22, ${(0.32 * mascaraAmt).toFixed(3)})`;
-            octx.lineWidth = Math.max(0.6, eyeW * 0.012);
+            const nLow = 10;
+            octx.strokeStyle = `rgba(18, 14, 20, ${(0.36 * mascaraAmt).toFixed(3)})`;
+            octx.lineWidth = Math.max(0.65, eyeW * 0.013);
             for (let i = 0; i < nLow; i++) {
-              const t = 0.52 + (i / (nLow - 1)) * 0.42;
+              const t = 0.50 + (i / (nLow - 1)) * 0.44;
               const [rx, ry] = samplePolyline(lower, t);
-              const lLen = eyeW * (0.055 + 0.045 * t) * (0.55 + 0.45 * mascaraAmt);
+              const lLen = eyeW * (0.06 + 0.05 * t) * (0.55 + 0.45 * mascaraAmt);
               const dx = (-upX * 0.85 + outX * 0.52) * lLen;
               const dy = (-upY * 0.85 + outY * 0.52) * lLen;
               octx.beginPath();
@@ -1313,7 +1362,8 @@
     }
 
     ctx.save();
-    ctx.globalCompositeOperation = 'multiply';
+    // Use source-over at calibrated dark pigment alpha so lashes & winged liner read crisply on ALL skin tones!
+    ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(off, 0, 0);
     ctx.restore();
   }
@@ -1459,7 +1509,7 @@
       }
       } // end !onlyDyn
 
-      // 5. Styled Eyebrow Mask (Ombre Soft Fill + Micro-Bladed Hair Strokes!)
+      // 5. Accurate Eyebrow Capture & Styling Mask (Exact native brow contour + styled arch/micro-hair strokes!)
       if (bCtx) {
         const shapeAmt = (p.browShape || 0) / 100;
         const pairs = [
@@ -1471,59 +1521,77 @@
           if (!brow) continue;
           const { targetSpine, targetThick, outX, outY, vx, vy, browLen } = brow;
           const N = targetSpine.length;
-          const upperPts = [], lowerPts = [];
-          for (let k = 0; k < N; k++) {
-            const [cx, cy] = targetSpine[k];
-            const th = targetThick[k];
-            upperPts.push([cx - vx * th, cy - vy * th]);
-            lowerPts.push([cx + vx * th, cy + vy * th]);
-          }
-          // Soft ombre base fill (lighter at inner head -> richer through arch & tail!)
-          bCtx.save();
-          bCtx.filter = `blur(${Math.max(1.2, browLen * 0.032).toFixed(1)}px)`;
-          const headPt = targetSpine[0], tailPt = targetSpine[N - 1];
-          const bg = bCtx.createLinearGradient(headPt[0], headPt[1], tailPt[0], tailPt[1]);
-          bg.addColorStop(0, 'rgba(255,255,255,0.42)');
-          bg.addColorStop(0.24, 'rgba(255,255,255,0.88)');
-          bg.addColorStop(0.82, 'rgba(255,255,255,0.92)');
-          bg.addColorStop(1, 'rgba(255,255,255,0.58)');
-          bCtx.fillStyle = bg;
-          bCtx.beginPath();
-          bCtx.moveTo(upperPts[0][0], upperPts[0][1]);
-          for (let k = 1; k < N; k++) bCtx.lineTo(upperPts[k][0], upperPts[k][1]);
-          for (let k = N - 1; k >= 0; k--) bCtx.lineTo(lowerPts[k][0], lowerPts[k][1]);
-          bCtx.closePath();
-          bCtx.fill();
 
-          // Directional micro-hair strokes for authentic microbladed / feathered brow realism!
-          bCtx.filter = 'none';
-          const hairCount = p.browStyle === 'feathered' ? 32 : 24;
-          const hairAlpha = p.browStyle === 'feathered' ? 0.55 : (p.browStyle === 'bold' ? 0.48 : 0.34);
-          bCtx.strokeStyle = `rgba(255,255,255,${hairAlpha})`;
-          bCtx.lineCap = 'round';
-          bCtx.lineWidth = Math.max(0.8, browLen * 0.014);
-          const spPts = targetSpine.map(s => [s[0], s[1]]);
-          for (let hi = 0; hi < hairCount; hi++) {
-            const t = 0.04 + (hi / (hairCount - 1)) * 0.90;
-            const [mx, my] = samplePolyline(spPts, t);
-            const idx = Math.min(N - 1, Math.round(t * (N - 1)));
-            const th = targetThick[idx] * (p.browStyle === 'feathered' ? 1.25 : 0.95);
-            // Hairs stand upward at head (t=0) and sweep diagonally outward along arch/tail (t=1)
-            const sweep = 0.25 + t * 1.15;
-            const sx = mx + vx * th * 0.72 - outX * th * 0.25;
-            const sy = my + vy * th * 0.72 - outY * th * 0.25;
-            const ex = mx - vx * th * 0.95 + outX * th * sweep;
-            const ey = my - vy * th * 0.95 + outY * th * sweep;
+          bCtx.save();
+          if (p.browStyle === 'original' || shapeAmt < 0.05) {
+            // Exact native eyebrow capture (hugs 100% of real brow hairs with soft feathered margin!)
+            bCtx.filter = `blur(${Math.max(1.2, browLen * 0.032).toFixed(1)}px)`;
+            bCtx.fillStyle = '#fff';
+            bCtx.strokeStyle = '#fff';
+            bCtx.lineCap = 'round';
+            bCtx.lineJoin = 'round';
+            bCtx.lineWidth = Math.max(4, browLen * 0.14);
+            if (bPts && bPts.length >= 3) {
+              bCtx.beginPath();
+              bCtx.moveTo(bPts[0][0] * w, bPts[0][1] * h);
+              for (let k = 1; k < bPts.length; k++) bCtx.lineTo(bPts[k][0] * w, bPts[k][1] * h);
+              bCtx.closePath();
+              bCtx.fill();
+              bCtx.stroke();
+            }
+          } else {
+            // Styled sculpted polygon aligned to the Liquify-warped brow targetSpine + ombre fade!
+            const upperPts = [], lowerPts = [];
+            for (let k = 0; k < N; k++) {
+              const [cx, cy] = targetSpine[k];
+              const th = targetThick[k] * 1.08;
+              upperPts.push([cx - vx * th, cy - vy * th]);
+              lowerPts.push([cx + vx * th, cy + vy * th]);
+            }
+            bCtx.filter = `blur(${Math.max(1.2, browLen * 0.030).toFixed(1)}px)`;
+            const headPt = targetSpine[0], tailPt = targetSpine[N - 1];
+            const bg = bCtx.createLinearGradient(headPt[0], headPt[1], tailPt[0], tailPt[1]);
+            bg.addColorStop(0, 'rgba(255,255,255,0.68)');
+            bg.addColorStop(0.20, 'rgba(255,255,255,0.96)');
+            bg.addColorStop(0.84, 'rgba(255,255,255,0.96)');
+            bg.addColorStop(1, 'rgba(255,255,255,0.72)');
+            bCtx.fillStyle = bg;
             bCtx.beginPath();
-            bCtx.moveTo(sx, sy);
-            bCtx.lineTo(ex, ey);
-            bCtx.stroke();
+            bCtx.moveTo(upperPts[0][0], upperPts[0][1]);
+            for (let k = 1; k < N; k++) bCtx.lineTo(upperPts[k][0], upperPts[k][1]);
+            for (let k = N - 1; k >= 0; k--) bCtx.lineTo(lowerPts[k][0], lowerPts[k][1]);
+            bCtx.closePath();
+            bCtx.fill();
+
+            // Crisp micro-bladed hair strokes (especially vivid for Bold Glam & Feathered styles!)
+            bCtx.filter = 'none';
+            const hairCount = p.browStyle === 'feathered' ? 38 : 28;
+            const hairAlpha = p.browStyle === 'feathered' ? 0.68 : (p.browStyle === 'bold' ? 0.58 : 0.40);
+            bCtx.strokeStyle = `rgba(255,255,255,${hairAlpha})`;
+            bCtx.lineCap = 'round';
+            bCtx.lineWidth = Math.max(0.9, browLen * 0.015);
+            const spPts = targetSpine.map(s => [s[0], s[1]]);
+            for (let hi = 0; hi < hairCount; hi++) {
+              const t = 0.04 + (hi / (hairCount - 1)) * 0.90;
+              const [mx, my] = samplePolyline(spPts, t);
+              const idx = Math.min(N - 1, Math.round(t * (N - 1)));
+              const th = targetThick[idx] * (p.browStyle === 'feathered' ? 1.32 : 1.0);
+              const sweep = 0.22 + t * 1.15;
+              const sx = mx + vx * th * 0.72 - outX * th * 0.22;
+              const sy = my + vy * th * 0.72 - outY * th * 0.22;
+              const ex = mx - vx * th * 0.98 + outX * th * sweep;
+              const ey = my - vy * th * 0.98 + outY * th * sweep;
+              bCtx.beginPath();
+              bCtx.moveTo(sx, sy);
+              bCtx.lineTo(ex, ey);
+              bCtx.stroke();
+            }
           }
           bCtx.restore();
         }
       }
 
-      // 6. Feathered Upper-Lid Eyeshadow Mask (eye sclera strictly punched out!)
+      // 6. Dual-Layer Editorial Upper-Lid Eyeshadow Mask (rich crease core + soft smoky halo, eye sclera strictly excluded!)
       if (shCtx) {
         const upX = -frame.vx, upY = -frame.vy;
         for (const [eyePts, isImgLeft] of [[frame.imgLeftPts, true], [frame.imgRightPts, false]]) {
@@ -1531,33 +1599,37 @@
           if (!arc || arc.upper.length < 3) continue;
           const { upper, eyeW, outX, outY } = arc;
           shCtx.save();
-          shCtx.filter = `blur(${Math.max(4, Math.round(eyeW * 0.16))}px)`;
-          const topArc = [], botArc = [];
-          const steps = 14;
-          for (let i = 0; i <= steps; i++) {
-            const t = i / steps;
-            const [px, py] = samplePolyline(upper, t);
-            // Lifted smoky crease: fuller & softly winged toward outer corner!
-            const lift = eyeW * (0.14 + 0.24 * Math.sin(t * Math.PI) + 0.16 * t * t);
-            const wingOut = t > 0.7 ? eyeW * 0.14 * ((t - 0.7) / 0.3) : 0;
-            topArc.push([px + upX * lift + outX * wingOut, py + upY * lift + outY * wingOut]);
-            botArc.push([px - upX * (eyeW * 0.02), py - upY * (eyeW * 0.02)]);
-          }
-          const innerP = upper[0], outerP = upper[upper.length - 1];
-          const sg = shCtx.createLinearGradient(innerP[0], innerP[1], outerP[0], outerP[1]);
-          sg.addColorStop(0, 'rgba(255,255,255,0.28)');
-          sg.addColorStop(0.55, 'rgba(255,255,255,0.78)');
-          sg.addColorStop(1, 'rgba(255,255,255,0.92)');
-          shCtx.fillStyle = sg;
-          shCtx.beginPath();
-          shCtx.moveTo(topArc[0][0], topArc[0][1]);
-          for (let i = 1; i < topArc.length; i++) shCtx.lineTo(topArc[i][0], topArc[i][1]);
-          for (let i = botArc.length - 1; i >= 0; i--) shCtx.lineTo(botArc[i][0], botArc[i][1]);
-          shCtx.closePath();
-          shCtx.fill();
+          const drawBand = (blurFrac, liftScale, wingScale, alphaOuter) => {
+            shCtx.filter = `blur(${Math.max(3, Math.round(eyeW * blurFrac))}px)`;
+            const topArc = [], botArc = [];
+            const steps = 14;
+            for (let i = 0; i <= steps; i++) {
+              const t = i / steps;
+              const [px, py] = samplePolyline(upper, t);
+              const lift = eyeW * (0.12 + 0.22 * Math.sin(t * Math.PI) + 0.18 * t * t) * liftScale;
+              const wingOut = t > 0.65 ? eyeW * wingScale * ((t - 0.65) / 0.35) : 0;
+              topArc.push([px + upX * lift + outX * wingOut, py + upY * lift + outY * wingOut]);
+              botArc.push([px - upX * (eyeW * 0.02), py - upY * (eyeW * 0.02)]);
+            }
+            const innerP = upper[0], outerP = upper[upper.length - 1];
+            const sg = shCtx.createLinearGradient(innerP[0], innerP[1], outerP[0], outerP[1]);
+            sg.addColorStop(0, `rgba(255,255,255,${(alphaOuter * 0.36).toFixed(2)})`);
+            sg.addColorStop(0.50, `rgba(255,255,255,${(alphaOuter * 0.85).toFixed(2)})`);
+            sg.addColorStop(1, `rgba(255,255,255,${alphaOuter.toFixed(2)})`);
+            shCtx.fillStyle = sg;
+            shCtx.beginPath();
+            shCtx.moveTo(topArc[0][0], topArc[0][1]);
+            for (let i = 1; i < topArc.length; i++) shCtx.lineTo(topArc[i][0], topArc[i][1]);
+            for (let i = botArc.length - 1; i >= 0; i--) shCtx.lineTo(botArc[i][0], botArc[i][1]);
+            shCtx.closePath();
+            shCtx.fill();
+          };
+          // Outer soft smoky wash + concentrated lower-crease color core
+          drawBand(0.17, 1.15, 0.20, 0.72);
+          drawBand(0.08, 0.64, 0.12, 0.85);
           // Strictly protect the eye itself so eyeshadow NEVER tints the eyeball!
           shCtx.globalCompositeOperation = 'destination-out';
-          shCtx.filter = `blur(${Math.max(1, Math.round(eyeW * 0.04))}px)`;
+          shCtx.filter = `blur(${Math.max(1, Math.round(eyeW * 0.03))}px)`;
           if (tracePoly(shCtx, eyePts, w, h)) shCtx.fill();
           shCtx.restore();
         }
@@ -1708,7 +1780,7 @@
     const warpKey = `${p.faceSlim}|${p.noseSlim}|${p.eyeEnlarge}|${p.lipPlump}|${p.browStyle}|${p.browShape}`;
     const browKey = `${p.browStyle}|${p.browShape}|${p.browTint > 0 ? 1 : 0}`;
     const needFine = p.clarity > 0 || p.wrinkle > 0 || p.texture !== 0 || p.smooth > 0 || p.eyes > 0;
-    const needMed  = p.smooth > 0 || p.blemish > 0 || p.wrinkle > 0 || p.clarity > 0;
+    const needMed  = p.smooth > 0 || p.blemish > 0 || p.wrinkle > 0 || p.clarity > 0 || p.browTint > 0;
     const needShadow = p.eyeshadow > 0;
     const needNose = p.noseContour > 0;
     const needHair = p.hairTint > 0;
@@ -1826,12 +1898,13 @@
     const brightAmt  = (p.brighten / 100);
     const glowAmt    = (p.glow / 100) * 0.28;
     const noseCntAmt = (p.noseContour / 100);
-    const browAmt    = (p.browTint / 100) * 0.72 + ((p.browStyle !== 'original' && p.browShape > 0 && p.browTint === 0) ? (p.browShape / 100) * 0.26 : 0);
-    const shadowAmt  = (p.eyeshadow / 100) * 0.56;
-    const cheekAmt   = (p.cheekBlush / 100) * 0.44;
+    const browAmt    = (p.browTint / 100) * 0.90 + ((p.browStyle !== 'original' && p.browShape > 0 && p.browTint === 0) ? (p.browShape / 100) * 0.30 : 0);
+    const shadowAmt  = (p.eyeshadow / 100) * 0.68;
+    const cheekAmt   = (p.cheekBlush / 100) * 0.48;
     const lipFinish  = p.lipFinish || 'satin';
-    const lipAmt     = (p.lipTint / 100) * (lipFinish === 'sheer' ? 0.38 : (lipFinish === 'matte' ? 0.68 : (lipFinish === 'glaze' ? 0.62 : 0.56)));
-    const hairAmt    = (p.hairTint / 100) * 0.78;
+    const lipAmt     = (p.lipTint / 100) * (lipFinish === 'sheer' ? 0.38 : (lipFinish === 'matte' ? 0.72 : (lipFinish === 'glaze' ? 0.66 : 0.60)));
+    const hairAmt    = (p.hairTint / 100) * 0.88;
+    const meanHairLum = (hairMask && hairMask._meanLum) ? hairMask._meanLum : 55;
     const contrast   = 1 + (p.contrastBoost / 100) * 0.7;
     const sat        = 1 + (p.satBoost / 100) * 0.9;
     const [chR, chG, chB] = hexToRgb(p.cheekColor);
@@ -2061,40 +2134,52 @@
         }
       }
 
-      // 8d. Eyebrow Color & Micro-Bladed Style Fill
+      // 8d. Hair-Aware True Eyebrow Dyeing & Micro-Bladed Style Fill (recolors dark brows to Blonde/Auburn/Chestnut/Black cleanly!)
       if (browAmt > 0 && hasFace && browMask) {
         const bw = browMask[i + 3] / 255;
         if (bw > 0.02) {
           const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-          const hairAffinity = clamp(1.18 - lum / 220, 0.42, 1.0);
-          const blend = clamp(browAmt * bw * hairAffinity, 0, 0.88);
-          const mulR = (r * (brR * 0.85 + 38)) / 255;
-          const mulG = (g * (brG * 0.85 + 38)) / 255;
-          const mulB = (b * (brB * 0.85 + 38)) / 255;
+          const localEnvLum = blurMed ? (0.299 * blurMed[i] + 0.587 * blurMed[i + 1] + 0.114 * blurMed[i + 2]) : Math.max(lum + 35, 130);
+          // Real brow hairs are significantly darker than surrounding forehead skin; skin gaps have low hairW
+          const skinDiff = Math.max(localEnvLum - lum, (155 - lum) * 0.52);
+          const hairW = clamp(skinDiff / 44, 0, 1);
+          const isStyledFill = (p.browStyle === 'bold' || p.browStyle === 'feathered');
+          const gapFill = isStyledFill ? 0.42 : (p.browStyle !== 'original' ? 0.26 : 0.14);
+          const effectiveW = hairW + (1 - hairW) * gapFill;
+          const blend = clamp(browAmt * bw * effectiveW, 0, 0.92);
+          // Preserve individual hair-strand micro-shading while shifting cleanly to target brow color (even Blonde/Auburn!)
+          const strandRel = clamp(0.62 + (lum / Math.max(45, localEnvLum * 0.65)) * 0.48, 0.48, 1.24);
+          const dyeR = clamp(brR * strandRel, 0, 255);
+          const dyeG = clamp(brG * strandRel, 0, 255);
+          const dyeB = clamp(brB * strandRel, 0, 255);
           const slR = softLight(r, brR), slG = softLight(g, brG), slB = softLight(b, brB);
-          const targetR = mulR * 0.35 + slR * 0.35 + brR * 0.30;
-          const targetG = mulG * 0.35 + slG * 0.35 + brG * 0.30;
-          const targetB = mulB * 0.35 + slB * 0.35 + brB * 0.30;
+          // High hairW uses direct luminance-preserving dye (so Blonde/Auburn/Custom colors really show!); skin gaps use subtle Soft-Light
+          const targetR = dyeR * (0.25 + 0.65 * hairW) + slR * (0.75 - 0.65 * hairW);
+          const targetG = dyeG * (0.25 + 0.65 * hairW) + slG * (0.75 - 0.65 * hairW);
+          const targetB = dyeB * (0.25 + 0.65 * hairW) + slB * (0.75 - 0.65 * hairW);
           r = r + (targetR - r) * blend;
           g = g + (targetG - g) * blend;
           b = b + (targetB - b) * blend;
         }
       }
 
-      // 8e. YouCam Hair Color Changer (rich luminance-preserving strand dye that pops even on dark hair!)
+      // 8e. Salon-Grade Hair Color Changer (relative-luminance strand dye so Golden/Platinum Blonde pops even on dark hair!)
       if (hairAmt > 0 && hairMask) {
         const hw = hairMask[i] / 255;
         if (hw > 0.03) {
-          const blend = clamp(hairAmt * hw * 1.15, 0, 0.90);
-          const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-          const lCurve = clamp(0.42 + Math.pow(lum, 0.78) * 1.05, 0.34, 1.42);
-          const colR = clamp(hrR * lCurve, 0, 255);
-          const colG = clamp(hrG * lCurve, 0, 255);
-          const colB = clamp(hrB * lCurve, 0, 255);
-          const slR = softLight(r, hrR), slG = softLight(g, hrG), slB = softLight(b, hrB);
-          const tr = colR * 0.72 + slR * 0.28;
-          const tg = colG * 0.72 + slG * 0.28;
-          const tb = colB * 0.72 + slB * 0.28;
+          const blend = clamp(hairAmt * hw * 1.18, 0, 0.94);
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          const relStrand = clamp(lum / Math.max(24, meanHairLum), 0.14, 2.3);
+          // Maps mid-tone hair directly to target dye (e.g. Golden Blonde / Platinum / Purple / Auburn) while keeping curls & highlights!
+          const shade = clamp(0.42 + Math.pow(relStrand, 0.72) * 0.62, 0.30, 1.38);
+          const colR = clamp(hrR * shade, 0, 255);
+          const colG = clamp(hrG * shade, 0, 255);
+          const colB = clamp(hrB * shade, 0, 255);
+          // Highlight sheen boost for glossy realistic strands
+          const spec = relStrand > 1.35 ? clamp((relStrand - 1.35) * 0.22, 0, 0.25) : 0;
+          const tr = colR + (255 - colR) * spec;
+          const tg = colG + (255 - colG) * spec;
+          const tb = colB + (255 - colB) * spec;
           r = r + (tr - r) * blend;
           g = g + (tg - g) * blend;
           b = b + (tb - b) * blend;

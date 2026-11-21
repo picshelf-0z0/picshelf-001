@@ -589,10 +589,14 @@ body.light-mode .creative-remove-ai-status.ready {
   grid-column: span 2;
 }
 .creative-slider-scroll {
-  max-height: 158px;
+  max-height: 112px;
   overflow-y: auto;
-  padding: 2px 2px 6px 2px;
+  padding: 2px 2px 4px 2px;
   -webkit-overflow-scrolling: touch;
+}
+#studioPanelEnhance .creative-panel-body,
+#studioPanelEnhance .creative-subpanel {
+  gap: 5px;
 }
 /* Zero-friction touch sliders inside Enhance (prevents vertical scroll / swipe from fighting horizontal drags) */
 #studioPanelEnhance .studio-slider {
