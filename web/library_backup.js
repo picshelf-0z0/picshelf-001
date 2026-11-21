@@ -932,10 +932,14 @@
     const restore = status.type === 'restore';
     phase = 'job';
     const progress = jobProgress(status);
+    let bodyText = t(restore ? 'backup_restoring_body' : 'backup_running_body');
+    if (!restore && window.isNativeIOS && typeof bodyText === 'string') {
+      bodyText = bodyText.replace(/Download\/PicShelf/g, 'Files › On My iPhone › PicShelf');
+    }
     render({
       eyebrow: t(restore ? 'settings_import_backup' : 'settings_export_backup'),
       title: t(restore ? 'backup_restoring_title' : 'backup_running_title'),
-      text: t(restore ? 'backup_restoring_body' : 'backup_running_body'),
+      text: bodyText,
       progress: progress.fraction, label: progress.label,
       primary: { label: t('backup_background'), run: closeDialog },
       secondary: { label: t('backup_cancel'), run: () => cancelJob(status.id, restore) },

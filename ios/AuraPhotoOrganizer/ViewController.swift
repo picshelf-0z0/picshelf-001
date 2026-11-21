@@ -2078,7 +2078,7 @@ The media/ folder inside also holds your original files directly if you ever ope
               let fArr = String(data: fLit, encoding: .utf8) else { return }
         DispatchQueue.main.async { [weak self] in
             self?.webView?.evaluateJavaScript(
-                "window.__iosBackupStatusJson = (\(sArr))[0]; window.__iosBackupFreeBytesJson = (\(fArr))[0];",
+                "if (window.__iosSetBackupStatus) { window.__iosSetBackupStatus((\(sArr))[0]); } else { window.__iosBackupStatusJson = (\(sArr))[0]; } window.__iosBackupFreeBytesJson = (\(fArr))[0];",
                 completionHandler: nil
             )
         }
@@ -2172,7 +2172,7 @@ The media/ folder inside also holds your original files directly if you ever ope
         return nil
     }
 
-    func resumeQueuedJobsIfNeeded() {
+    func resumeQueuedJobsIfNeeded(pushUpdate: Bool = true) {
         stateLock.lock()
         pausedByOS = false
         let jobs = allJobsUnlocked()
@@ -2180,14 +2180,14 @@ The media/ folder inside also holds your original files directly if you ever ope
         stateLock.unlock()
 
         guard !alreadyActive else {
-            pushStatusToWebView()
+            if pushUpdate { pushStatusToWebView() }
             return
         }
         if let queued = jobs.first(where: { ($0["state"] as? String) == "queued" }),
            let jid = queued["id"] as? String {
             scheduleWorker(jobId: jid)
         }
-        pushStatusToWebView()
+        if pushUpdate { pushStatusToWebView() }
     }
 
     // MARK: - HTTP Router for Loopback Backup Endpoints
@@ -2242,10 +2242,27 @@ The media/ folder inside also holds your original files directly if you ever ope
             return jsonResp(res)
 
         case "status":
+            // Self-repair (matching Android MainActivity): auto-resume any queued job if worker is idle
+            resumeQueuedJobsIfNeeded(pushUpdate: false)
             return jsonResp(statusJson())
 
         case "free-bytes":
             return jsonResp(freeBytesJson())
+
+        case "validate-sources":
+            guard let arr = try? JSONSerialization.jsonObject(with: body) as? [String] else {
+                return boolResp(true)
+            }
+            let fm = FileManager.default
+            var allPresent = true
+            for sid in arr {
+                guard let u = PicShelfMediaStore.shared.sourceURL(for: sid),
+                      fm.fileExists(atPath: u.path) else {
+                    allPresent = false
+                    break
+                }
+            }
+            return boolResp(allPresent)
 
         case "entries":
             let token = query["token"] ?? ""
@@ -2543,8 +2560,8 @@ The media/ folder inside also holds your original files directly if you ever ope
         }
         stateLock.unlock()
 
-        scheduleWorker(jobId: id)
         let st = statusJson()
+        scheduleWorker(jobId: id)
         return jsonString(["ok": true, "id": id, "total": totalBytes, "status": st])
     }
 
@@ -2717,19 +2734,35 @@ The media/ folder inside also holds your original files directly if you ever ope
         FileManager.default.createFile(atPath: dstURL.path, contents: nil)
         guard let outFH = try? FileHandle(forWritingTo: dstURL) else { return false }
         defer { try? outFH.close() }
-        do {
-            try fh.seek(toOffset: offset)
-            var rem = length
-            while rem > 0 {
-                let n = Int(min(rem, 262144))
-                guard let chunk = try fh.read(upToCount: n), !chunk.isEmpty else { return false }
-                outFH.write(chunk)
-                rem -= UInt64(chunk.count)
+        let inFd = fh.fileDescriptor
+        let outFd = outFH.fileDescriptor
+        let bufCap = 1024 * 1024
+        let rawBuf = UnsafeMutableRawPointer.allocate(byteCount: bufCap, alignment: 4096)
+        defer { rawBuf.deallocate() }
+        var curOff = offset
+        var rem = length
+        while rem > 0 {
+            let toRead = Int(min(rem, UInt64(bufCap)))
+            let n = Darwin.pread(inFd, rawBuf, toRead, off_t(curOff))
+            if n < 0 {
+                if errno == EINTR { continue }
+                return false
             }
-            return true
-        } catch {
-            return false
+            if n == 0 { return false }
+            var written = 0
+            while written < n {
+                let w = Darwin.write(outFd, rawBuf.advanced(by: written), n - written)
+                if w < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                if w == 0 { return false }
+                written += w
+            }
+            curOff += UInt64(n)
+            rem -= UInt64(n)
         }
+        return true
     }
 
     private func entriesJson(token: String) -> String {
@@ -2867,8 +2900,8 @@ The media/ folder inside also holds your original files directly if you ever ope
         }
         stateLock.unlock()
 
-        scheduleWorker(jobId: created.id)
         let st = statusJson()
+        scheduleWorker(jobId: created.id)
         return jsonString(["ok": true, "id": created.id, "status": st])
     }
 
@@ -3049,37 +3082,79 @@ The media/ folder inside also holds your original files directly if you ever ope
         }
     }
 
+    private func posixWriteAll(fd: Int32, ptr: UnsafeRawPointer, count: Int) -> Bool {
+        var sent = 0
+        while sent < count {
+            let w = Darwin.write(fd, ptr.advanced(by: sent), count - sent)
+            if w > 0 {
+                sent += w
+            } else if w < 0 && errno == EINTR {
+                continue
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func posixWriteData(fd: Int32, _ data: Data) -> Bool {
+        if data.isEmpty { return true }
+        return data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return true }
+            return posixWriteAll(fd: fd, ptr: base, count: data.count)
+        }
+    }
+
+    private func posixOffset(fd: Int32) -> UInt64 {
+        let pos = Darwin.lseek(fd, 0, SEEK_CUR)
+        return pos >= 0 ? UInt64(pos) : 0
+    }
+
     private func writeZeros(to fh: FileHandle, count: UInt64) -> Bool {
         if count == 0 { return true }
-        let block = Data(count: Int(min(count, 262144)))
+        let outFd = fh.fileDescriptor
+        let blockSize = Int(min(count, 262144))
+        guard let zBuf = Darwin.calloc(1, blockSize) else { return false }
+        defer { Darwin.free(zBuf) }
         var rem = count
         while rem > 0 {
-            let n = Int(min(rem, UInt64(block.count)))
-            if n == block.count { fh.write(block) }
-            else { fh.write(block.prefix(n)) }
+            let n = Int(min(rem, UInt64(blockSize)))
+            if !posixWriteAll(fd: outFd, ptr: zBuf, count: n) { return false }
             rem -= UInt64(n)
         }
         return true
     }
 
-    private func copyRange(from inFH: FileHandle, start: UInt64, length: UInt64, to outFH: FileHandle, jobId: String, onBytes: (UInt64) -> Void) -> UInt64 {
+    private func copyRange(from inFH: FileHandle, start: UInt64, length: UInt64, to outFH: FileHandle,
+                           buf: UnsafeMutableRawPointer, bufCap: Int, jobId: String,
+                           onBytes: (UInt64) -> Void, onCheckpoint: ((UInt64) -> Void)? = nil) -> UInt64 {
         guard length > 0 else { return 0 }
-        do {
-            try inFH.seek(toOffset: start)
-            var copied: UInt64 = 0
-            while copied < length {
-                if isStopped(jobId: jobId) { return copied }
-                let toRead = Int(min(length - copied, 1024 * 1024))
-                guard let chunk = try inFH.read(upToCount: toRead), !chunk.isEmpty else { break }
-                outFH.write(chunk)
-                let c = UInt64(chunk.count)
-                copied += c
-                onBytes(c)
+        let inFd = inFH.fileDescriptor
+        let outFd = outFH.fileDescriptor
+        var copied: UInt64 = 0
+        var lastCp = CACurrentMediaTime()
+        while copied < length {
+            if isStopped(jobId: jobId) { return copied }
+            let toRead = Int(min(length - copied, UInt64(bufCap)))
+            let n = Darwin.pread(inFd, buf, toRead, off_t(start + copied))
+            if n < 0 {
+                if errno == EINTR { continue }
+                break
             }
-            return copied
-        } catch {
-            return 0
+            if n == 0 { break }
+            if !posixWriteAll(fd: outFd, ptr: buf, count: n) { break }
+            let c = UInt64(n)
+            copied += c
+            onBytes(c)
+            if let cpCb = onCheckpoint {
+                let now = CACurrentMediaTime()
+                if now - lastCp >= 2.0 {
+                    lastCp = now
+                    cpCb(copied)
+                }
+            }
         }
+        return copied
     }
 
     private func executeExport(dir jobDirURL: URL, jobId: String, job: [String: Any]) -> String {
@@ -3112,43 +3187,58 @@ The media/ folder inside also holds your original files directly if you ever ope
         }
         guard let outFH = try? FileHandle(forUpdating: exportPartURL) else { return "failed:storage" }
         defer { try? outFH.close() }
+        let outFd = outFH.fileDescriptor
+        let existingPartSize = ((try? FileManager.default.attributesOfItem(atPath: exportPartURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
 
-        // Restore checkpoint if resuming
+        // Restore exact byte-level checkpoint if resuming (supports mid-video resume with zero backwards progress)
         var nextIdx = 0
         var resumeOffset: UInt64 = 0
+        var resumeEntryCopied: UInt64 = 0
         var failedSet = Set<Int>()
         let cpURL = jobDirURL.appendingPathComponent("checkpoint.json")
         if let cpData = try? Data(contentsOf: cpURL),
            let cp = try? JSONSerialization.jsonObject(with: cpData) as? [String: Any],
            let cpNext = (cp["next"] as? NSNumber)?.intValue,
            let cpOff = (cp["offset"] as? NSNumber)?.uint64Value,
-           cpNext >= 0, cpNext <= entries.count, cpOff >= startOffset, cpOff <= mediaEnd {
-            nextIdx = cpNext
-            resumeOffset = cpOff
+           cpNext >= 0, cpNext <= entries.count, cpOff >= startOffset, cpOff <= mediaEnd, cpOff <= existingPartSize {
+            let cpEntryCopied = (cp["entryCopied"] as? NSNumber)?.uint64Value ?? 0
+            if cpEntryCopied > 0 && cpNext < entries.count {
+                let expectedLen = (entries[cpNext]["length"] as? NSNumber)?.uint64Value ?? 0
+                if cpEntryCopied <= expectedLen && cpOff == offsets[cpNext] + cpEntryCopied {
+                    nextIdx = cpNext
+                    resumeOffset = cpOff
+                    resumeEntryCopied = cpEntryCopied
+                }
+            } else if cpEntryCopied == 0 {
+                nextIdx = cpNext
+                resumeOffset = cpOff
+            }
             if let fArr = cp["failed"] as? [NSNumber] {
                 failedSet = Set(fArr.map { $0.intValue })
             }
         }
 
-        do {
-            try outFH.truncate(atOffset: nextIdx == 0 ? 0 : resumeOffset)
-            try outFH.seek(toOffset: nextIdx == 0 ? 0 : resumeOffset)
-        } catch {
+        let startPos: UInt64 = (nextIdx == 0 && resumeEntryCopied == 0) ? 0 : resumeOffset
+        guard Darwin.ftruncate(outFd, off_t(startPos)) == 0,
+              Darwin.lseek(outFd, off_t(startPos), SEEK_SET) == off_t(startPos) else {
             return "failed:storage"
         }
 
         let nowSec = UInt64(Date().timeIntervalSince1970)
-        if nextIdx == 0 {
-            outFH.write(BackupTarHelper.header(name: "PicShelf backup - read me.txt", size: UInt64(readmeData.count), mtimeSeconds: nowSec))
-            outFH.write(readmeData)
-            _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(readmeData.count))))
+        if startPos == 0 {
+            guard posixWriteData(fd: outFd, BackupTarHelper.header(name: "PicShelf backup - read me.txt", size: UInt64(readmeData.count), mtimeSeconds: nowSec)),
+                  posixWriteData(fd: outFd, readmeData),
+                  writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(readmeData.count)))) else {
+                return "failed:storage"
+            }
         }
 
         var lastProgressPush = CACurrentMediaTime()
         var lastCheckpoint = CACurrentMediaTime()
         stateLock.lock()
-        liveDone = nextIdx == 0 ? 0 : min(liveTotal, offsets[max(0, nextIdx - 1)])
+        liveDone = min(liveTotal, startPos)
         stateLock.unlock()
+        pushStatusToWebView()
 
         let onBytes: (UInt64) -> Void = { [weak self] added in
             guard let self = self else { return }
@@ -3156,11 +3246,16 @@ The media/ folder inside also holds your original files directly if you ever ope
             self.liveDone += added
             self.stateLock.unlock()
             let now = CACurrentMediaTime()
-            if now - lastProgressPush >= 0.4 {
+            if now - lastProgressPush >= 0.35 {
                 lastProgressPush = now
                 self.pushStatusToWebView()
             }
         }
+
+        // Single reusable 4 MB copy buffer -> constant ~4 MB RAM even on 100 GB backups (zero Jetsam kills!)
+        let copyBufCap = 4 * 1024 * 1024
+        let copyBuf = UnsafeMutableRawPointer.allocate(byteCount: copyBufCap, alignment: 4096)
+        defer { copyBuf.deallocate() }
 
         // Keep up to 6 open source FileHandles to avoid reopening the same archive repeatedly
         var openHandles: [String: FileHandle] = [:]
@@ -3176,6 +3271,19 @@ The media/ folder inside also holds your original files directly if you ever ope
             return fh
         }
 
+        func saveExportCheckpoint(next: Int, pos: UInt64, entryCopied: UInt64) {
+            let cpObj: [String: Any] = [
+                "next": next,
+                "offset": pos,
+                "entryCopied": entryCopied,
+                "failed": Array(failedSet).sorted()
+            ]
+            if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
+                try? cpD.write(to: cpURL, options: .atomic)
+            }
+            updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
+        }
+
         while nextIdx < entries.count {
             if isStopped(jobId: jobId) {
                 return isCancelled(jobId: jobId) ? "cancelled" : "paused"
@@ -3185,78 +3293,116 @@ The media/ folder inside also holds your original files directly if you ever ope
             let length = (e["length"] as? NSNumber)?.uint64Value ?? 0
             let t = e["t"] as? String ?? "a"
 
-            outFH.write(BackupTarHelper.header(name: entryName, size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
-            let dataStartPos = outFH.offsetInFile
-            var copied: UInt64 = 0
+            let continuingMidEntry = (resumeEntryCopied > 0)
+            let alreadyCopied = resumeEntryCopied
+            resumeEntryCopied = 0
 
-            if t == "a" {
-                let srcId = e["source"] as? String ?? ""
-                let kind = e["kind"] as? String ?? "tar"
-                let offset = (e["offset"] as? NSNumber)?.uint64Value ?? 0
-                let size = (e["size"] as? NSNumber)?.uint64Value ?? length
-                let method = (e["method"] as? NSNumber)?.intValue ?? 0
-                if let inFH = sourceHandle(for: srcId) {
-                    if kind == "zip" && method == 8 {
-                        if let inflated = PicShelfMediaStore.shared.extractEntryToData(sourceId: srcId, kind: "zip", offset: offset, size: size, method: 8, maxBytes: 512 * 1024 * 1024) {
-                            let slice = inflated.prefix(Int(length))
-                            outFH.write(slice)
-                            copied = UInt64(slice.count)
-                            onBytes(copied)
-                        }
-                    } else {
-                        var realStart = offset
-                        var validStart = true
-                        if kind == "zip" {
-                            if let resolved = PicShelfMediaStore.shared.resolveZipDataOffset(fileHandle: inFH, localOffset: offset) {
-                                realStart = resolved
-                            } else {
-                                validStart = false
+            let dataStartPos: UInt64
+            if continuingMidEntry {
+                dataStartPos = offsets[nextIdx]
+            } else {
+                guard posixWriteData(fd: outFd, BackupTarHelper.header(name: entryName, size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970))) else {
+                    return "failed:storage"
+                }
+                dataStartPos = posixOffset(fd: outFd)
+            }
+
+            var copied: UInt64 = alreadyCopied
+
+            autoreleasepool {
+                if t == "a" {
+                    let srcId = e["source"] as? String ?? ""
+                    let kind = e["kind"] as? String ?? "tar"
+                    let offset = (e["offset"] as? NSNumber)?.uint64Value ?? 0
+                    let size = (e["size"] as? NSNumber)?.uint64Value ?? length
+                    let method = (e["method"] as? NSNumber)?.intValue ?? 0
+                    if let inFH = sourceHandle(for: srcId) {
+                        if kind == "zip" && method == 8 {
+                            if let inflated = PicShelfMediaStore.shared.extractEntryToData(sourceId: srcId, kind: "zip", offset: offset, size: size, method: 8, maxBytes: 512 * 1024 * 1024) {
+                                let slice = inflated.prefix(Int(length))
+                                if posixWriteData(fd: outFd, slice) {
+                                    copied = UInt64(slice.count)
+                                    onBytes(copied)
+                                }
+                            }
+                        } else {
+                            var realStart = offset
+                            var validStart = true
+                            if kind == "zip" {
+                                if let resolved = PicShelfMediaStore.shared.resolveZipDataOffset(fileHandle: inFH, localOffset: offset) {
+                                    realStart = resolved
+                                } else {
+                                    validStart = false
+                                }
+                            }
+                            if validStart {
+                                let targetLen = min(size, length)
+                                if targetLen > alreadyCopied {
+                                    let newlyCopied = copyRange(
+                                        from: inFH, start: realStart + alreadyCopied, length: targetLen - alreadyCopied,
+                                        to: outFH, buf: copyBuf, bufCap: copyBufCap, jobId: jobId, onBytes: onBytes
+                                    ) { chunkCopied in
+                                        let totalInEntry = alreadyCopied + chunkCopied
+                                        saveExportCheckpoint(next: nextIdx, pos: dataStartPos + totalInEntry, entryCopied: totalInEntry)
+                                    }
+                                    copied = alreadyCopied + newlyCopied
+                                }
                             }
                         }
-                        if validStart {
-                            copied = copyRange(from: inFH, start: realStart, length: min(size, length), to: outFH, jobId: jobId, onBytes: onBytes)
+                    }
+                } else if t == "f", let stageIdx = (e["stage"] as? NSNumber)?.intValue {
+                    let stURL = jobDirURL.appendingPathComponent("staged/\(stageIdx)")
+                    let method = (e["method"] as? NSNumber)?.intValue ?? 0
+                    if method == 8 {
+                        if let compressed = try? Data(contentsOf: stURL),
+                           let inflated = PicShelfMediaStore.shared.inflateRawDeflate(compressed, expectedSize: Int(min(length, 256 * 1024 * 1024))) {
+                            let slice = inflated.prefix(Int(length))
+                            if posixWriteData(fd: outFd, slice) {
+                                copied = UInt64(slice.count)
+                                onBytes(copied)
+                            }
+                        }
+                    } else if let stFH = try? FileHandle(forReadingFrom: stURL) {
+                        defer { try? stFH.close() }
+                        if length > alreadyCopied {
+                            let newlyCopied = copyRange(
+                                from: stFH, start: alreadyCopied, length: length - alreadyCopied,
+                                to: outFH, buf: copyBuf, bufCap: copyBufCap, jobId: jobId, onBytes: onBytes
+                            ) { chunkCopied in
+                                let totalInEntry = alreadyCopied + chunkCopied
+                                saveExportCheckpoint(next: nextIdx, pos: dataStartPos + totalInEntry, entryCopied: totalInEntry)
+                            }
+                            copied = alreadyCopied + newlyCopied
                         }
                     }
-                }
-            } else if t == "f", let stageIdx = (e["stage"] as? NSNumber)?.intValue {
-                let stURL = jobDirURL.appendingPathComponent("staged/\(stageIdx)")
-                let method = (e["method"] as? NSNumber)?.intValue ?? 0
-                if method == 8 {
-                    if let compressed = try? Data(contentsOf: stURL),
-                       let inflated = PicShelfMediaStore.shared.inflateRawDeflate(compressed, expectedSize: Int(min(length, 256 * 1024 * 1024))) {
-                        let slice = inflated.prefix(Int(length))
-                        outFH.write(slice)
-                        copied = UInt64(slice.count)
-                        onBytes(copied)
-                    }
-                } else if let stFH = try? FileHandle(forReadingFrom: stURL) {
-                    copied = copyRange(from: stFH, start: 0, length: length, to: outFH, jobId: jobId, onBytes: onBytes)
-                    try? stFH.close()
                 }
             }
 
             if isStopped(jobId: jobId) {
+                // Persist exact byte offset mid-entry so resuming continues seamlessly with zero progress drop
+                if copied > 0 && copied < length && ((e["method"] as? NSNumber)?.intValue ?? 0) == 0 {
+                    let curPos = posixOffset(fd: outFd)
+                    if curPos == dataStartPos + copied {
+                        saveExportCheckpoint(next: nextIdx, pos: curPos, entryCopied: copied)
+                    }
+                }
                 return isCancelled(jobId: jobId) ? "cancelled" : "paused"
             }
 
-            let writtenSoFar = outFH.offsetInFile - dataStartPos
+            let curPos = posixOffset(fd: outFd)
+            let writtenSoFar = curPos >= dataStartPos ? (curPos - dataStartPos) : 0
             if writtenSoFar < length {
                 failedSet.insert(nextIdx)
-                _ = writeZeros(to: outFH, count: length - writtenSoFar)
+                guard writeZeros(to: outFH, count: length - writtenSoFar) else { return "failed:storage" }
             } else if copied < length {
                 failedSet.insert(nextIdx)
             }
-            _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: length)))
+            guard writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: length))) else { return "failed:storage" }
             nextIdx += 1
 
             let now = CACurrentMediaTime()
             if now - lastCheckpoint >= 2.0 || nextIdx == entries.count {
-                let pos = outFH.offsetInFile
-                let cpObj: [String: Any] = ["next": nextIdx, "offset": pos, "failed": Array(failedSet).sorted()]
-                if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
-                    try? cpD.write(to: cpURL, options: .atomic)
-                }
-                updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
+                saveExportCheckpoint(next: nextIdx, pos: posixOffset(fd: outFd), entryCopied: 0)
                 lastCheckpoint = now
             }
         }
@@ -3270,11 +3416,14 @@ The media/ folder inside also holds your original files directly if you ever ope
         guard let indexAttrs = try? FileManager.default.attributesOfItem(atPath: indexURL.path),
               let indexLen = (indexAttrs[.size] as? NSNumber)?.uint64Value,
               let idxFH = try? FileHandle(forReadingFrom: indexURL) else { return "failed:storage" }
-        let indexOffset = outFH.offsetInFile + BackupTarHelper.blockSize
-        outFH.write(BackupTarHelper.header(name: "picshelf/index.json.gz", size: indexLen, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
-        _ = copyRange(from: idxFH, start: 0, length: indexLen, to: outFH, jobId: jobId) { _ in }
+        let indexOffset = posixOffset(fd: outFd) + BackupTarHelper.blockSize
+        guard posixWriteData(fd: outFd, BackupTarHelper.header(name: "picshelf/index.json.gz", size: indexLen, mtimeSeconds: UInt64(Date().timeIntervalSince1970))) else {
+            try? idxFH.close()
+            return "failed:storage"
+        }
+        _ = copyRange(from: idxFH, start: 0, length: indexLen, to: outFH, buf: copyBuf, bufCap: copyBufCap, jobId: jobId, onBytes: { _ in })
         try? idxFH.close()
-        _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: indexLen)))
+        guard writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: indexLen))) else { return "failed:storage" }
 
         // Write picshelf/entries.json.gz
         var tableEntries: [[UInt64]] = []
@@ -3286,10 +3435,12 @@ The media/ folder inside also holds your original files directly if you ever ope
         let tableObj: [String: Any] = ["version": 1, "entries": tableEntries]
         guard let tableRaw = try? JSONSerialization.data(withJSONObject: tableObj, options: []),
               let tableGz = BackupGzipHelper.compress(tableRaw) else { return "failed:storage" }
-        let tableOffset = outFH.offsetInFile + BackupTarHelper.blockSize
-        outFH.write(BackupTarHelper.header(name: "picshelf/entries.json.gz", size: UInt64(tableGz.count), mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
-        outFH.write(tableGz)
-        _ = writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(tableGz.count))))
+        let tableOffset = posixOffset(fd: outFd) + BackupTarHelper.blockSize
+        guard posixWriteData(fd: outFd, BackupTarHelper.header(name: "picshelf/entries.json.gz", size: UInt64(tableGz.count), mtimeSeconds: UInt64(Date().timeIntervalSince1970))),
+              posixWriteData(fd: outFd, tableGz),
+              writeZeros(to: outFH, count: UInt64(BackupTarHelper.padding(for: UInt64(tableGz.count)))) else {
+            return "failed:storage"
+        }
 
         // Write fixed 512-byte picshelf/locator.json + 1024-byte TAR EOF trailer
         let locatorObj: [String: Any] = [
@@ -3302,12 +3453,14 @@ The media/ folder inside also holds your original files directly if you ever ope
         guard let locRaw = try? JSONSerialization.data(withJSONObject: locatorObj, options: []), locRaw.count <= 512 else { return "failed:storage" }
         var locBlock = Data(repeating: 0x20, count: 512)
         locBlock.replaceSubrange(0..<locRaw.count, with: locRaw)
-        outFH.write(BackupTarHelper.header(name: Self.locatorName, size: 512, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
-        outFH.write(locBlock)
-        _ = writeZeros(to: outFH, count: 1024)
+        guard posixWriteData(fd: outFd, BackupTarHelper.header(name: Self.locatorName, size: 512, mtimeSeconds: UInt64(Date().timeIntervalSince1970))),
+              posixWriteData(fd: outFd, locBlock),
+              writeZeros(to: outFH, count: 1024) else {
+            return "failed:storage"
+        }
 
-        let totalWritten = outFH.offsetInFile
-        try? outFH.synchronize()
+        let totalWritten = posixOffset(fd: outFd)
+        Darwin.fsync(outFd)
         try? outFH.close()
 
         // Atomically publish to Files › On My iPhone › PicShelf/
@@ -3381,10 +3534,16 @@ The media/ folder inside also holds your original files directly if you ever ope
             try? archFH.close()
             try? heldFH.close()
         }
+        let archFd = archFH.fileDescriptor
+        let heldFd = heldFH.fileDescriptor
+        let existingArchSize = ((try? FileManager.default.attributesOfItem(atPath: partialArchiveURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
+        let existingHeldSize = ((try? FileManager.default.attributesOfItem(atPath: heldURL.path)[.size]) as? NSNumber)?.uint64Value ?? 0
 
         var nextIdx = 0
         var archPos: UInt64 = 0
         var heldPos: UInt64 = 0
+        var resumeEntryCopied: UInt64 = 0
+        var resumeEntryDataOff: UInt64 = 0
         var outOffsets: [UInt64] = []
         var failedSet = Set<Int>()
         let cpURL = jobDirURL.appendingPathComponent("checkpoint.json")
@@ -3394,32 +3553,43 @@ The media/ folder inside also holds your original files directly if you ever ope
            let cpArch = (cp["offset"] as? NSNumber)?.uint64Value,
            let cpHeld = (cp["held"] as? NSNumber)?.uint64Value,
            let cpOffs = cp["offsets"] as? [NSNumber],
-           cpNext >= 0, cpNext <= list.count, cpOffs.count == cpNext {
+           cpNext >= 0, cpNext <= list.count, cpOffs.count == cpNext,
+           cpArch <= existingArchSize, cpHeld <= existingHeldSize {
+            let cpEntryCopied = (cp["entryCopied"] as? NSNumber)?.uint64Value ?? 0
+            let cpEntryDataOff = (cp["entryDataOff"] as? NSNumber)?.uint64Value ?? 0
             nextIdx = cpNext
             archPos = cpArch
             heldPos = cpHeld
             outOffsets = cpOffs.map { $0.uint64Value }
+            if cpEntryCopied > 0 && cpNext < list.count {
+                let rowLen = (list[cpNext][2] as? NSNumber)?.uint64Value ?? 0
+                if cpEntryCopied <= rowLen && cpEntryDataOff >= BackupTarHelper.blockSize {
+                    resumeEntryCopied = cpEntryCopied
+                    resumeEntryDataOff = cpEntryDataOff
+                }
+            }
             if let fArr = cp["failed"] as? [NSNumber] {
                 failedSet = Set(fArr.map { $0.intValue })
             }
         }
 
-        do {
-            try archFH.truncate(atOffset: nextIdx == 0 ? 0 : archPos)
-            try archFH.seek(toOffset: nextIdx == 0 ? 0 : archPos)
-            try heldFH.truncate(atOffset: nextIdx == 0 ? 0 : heldPos)
-            try heldFH.seek(toOffset: nextIdx == 0 ? 0 : heldPos)
-        } catch {
+        let initArchPos = (nextIdx == 0 && resumeEntryCopied == 0) ? 0 : archPos
+        let initHeldPos = (nextIdx == 0 && resumeEntryCopied == 0) ? 0 : heldPos
+        guard Darwin.ftruncate(archFd, off_t(initArchPos)) == 0,
+              Darwin.lseek(archFd, off_t(initArchPos), SEEK_SET) == off_t(initArchPos),
+              Darwin.ftruncate(heldFd, off_t(initHeldPos)) == 0,
+              Darwin.lseek(heldFd, off_t(initHeldPos), SEEK_SET) == off_t(initHeldPos) else {
             return "failed:storage"
         }
 
-        var doneAcc: UInt64 = indexLength
+        var doneAcc: UInt64 = indexLength + resumeEntryCopied
         for i in 0..<nextIdx {
             doneAcc += (list[i][2] as? NSNumber)?.uint64Value ?? 0
         }
         stateLock.lock()
-        liveDone = doneAcc
+        liveDone = min(liveTotal, doneAcc)
         stateLock.unlock()
+        pushStatusToWebView()
 
         var hasArchive = false
         var hasHeld = false
@@ -3436,10 +3606,30 @@ The media/ folder inside also holds your original files directly if you ever ope
             self.liveDone += added
             self.stateLock.unlock()
             let now = CACurrentMediaTime()
-            if now - lastProgressPush >= 0.4 {
+            if now - lastProgressPush >= 0.35 {
                 lastProgressPush = now
                 self.pushStatusToWebView()
             }
+        }
+
+        let copyBufCap = 4 * 1024 * 1024
+        let copyBuf = UnsafeMutableRawPointer.allocate(byteCount: copyBufCap, alignment: 4096)
+        defer { copyBuf.deallocate() }
+
+        func saveRestoreCheckpoint(next: Int, entryCopied: UInt64, entryDataOff: UInt64) {
+            let cpObj: [String: Any] = [
+                "next": next,
+                "offset": posixOffset(fd: archFd),
+                "held": posixOffset(fd: heldFd),
+                "entryCopied": entryCopied,
+                "entryDataOff": entryDataOff,
+                "offsets": outOffsets,
+                "failed": Array(failedSet).sorted()
+            ]
+            if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
+                try? cpD.write(to: cpURL, options: .atomic)
+            }
+            updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
         }
 
         while nextIdx < list.count {
@@ -3452,46 +3642,62 @@ The media/ folder inside also holds your original files directly if you ever ope
             let length = (row[2] as? NSNumber)?.uint64Value ?? 0
             let isHeld = ((row.count >= 5 ? (row[4] as? NSNumber)?.intValue : 0) ?? 0) == 1
 
-            if UInt64(max(0, availableDiskBytes())) < length + Self.freeReserve {
+            let continuingMidEntry = (resumeEntryCopied > 0)
+            let alreadyCopied = resumeEntryCopied
+            let savedDataOff = resumeEntryDataOff
+            resumeEntryCopied = 0
+            resumeEntryDataOff = 0
+
+            let remainingLen = length > alreadyCopied ? (length - alreadyCopied) : 0
+            if UInt64(max(0, availableDiskBytes())) < remainingLen + Self.freeReserve {
                 return "failed:space"
             }
 
             let targetFH = isHeld ? heldFH : archFH
-            targetFH.write(BackupTarHelper.header(name: "m/\(entryNum).bin", size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970)))
-            let dataOff = targetFH.offsetInFile
-            let copied = copyRange(from: srcFH, start: srcOff, length: length, to: targetFH, jobId: jobId, onBytes: onBytes)
+            let targetFd = isHeld ? heldFd : archFd
+            let dataOff: UInt64
+            if continuingMidEntry {
+                dataOff = savedDataOff
+            } else {
+                guard posixWriteData(fd: targetFd, BackupTarHelper.header(name: "m/\(entryNum).bin", size: length, mtimeSeconds: UInt64(Date().timeIntervalSince1970))) else {
+                    return "failed:storage"
+                }
+                dataOff = posixOffset(fd: targetFd)
+            }
+
+            let newlyCopied = copyRange(
+                from: srcFH, start: srcOff + alreadyCopied, length: remainingLen,
+                to: targetFH, buf: copyBuf, bufCap: copyBufCap, jobId: jobId, onBytes: onBytes
+            ) { chunkCopied in
+                saveRestoreCheckpoint(next: nextIdx, entryCopied: alreadyCopied + chunkCopied, entryDataOff: dataOff)
+            }
+            let copied = alreadyCopied + newlyCopied
+
             if isStopped(jobId: jobId) {
+                if copied > 0 && copied < length {
+                    saveRestoreCheckpoint(next: nextIdx, entryCopied: copied, entryDataOff: dataOff)
+                }
                 return isCancelled(jobId: jobId) ? "cancelled" : "paused"
             }
             if copied < length {
                 failedSet.insert(nextIdx)
-                _ = writeZeros(to: targetFH, count: length - copied)
+                guard writeZeros(to: targetFH, count: length - copied) else { return "failed:storage" }
             }
-            _ = writeZeros(to: targetFH, count: UInt64(BackupTarHelper.padding(for: length)))
+            guard writeZeros(to: targetFH, count: UInt64(BackupTarHelper.padding(for: length))) else { return "failed:storage" }
             outOffsets.append(dataOff)
             nextIdx += 1
 
             let now = CACurrentMediaTime()
             if now - lastCheckpoint >= 2.0 || nextIdx == list.count {
-                let cpObj: [String: Any] = [
-                    "next": nextIdx,
-                    "offset": archFH.offsetInFile,
-                    "held": heldFH.offsetInFile,
-                    "offsets": outOffsets,
-                    "failed": Array(failedSet).sorted()
-                ]
-                if let cpD = try? JSONSerialization.data(withJSONObject: cpObj, options: []) {
-                    try? cpD.write(to: cpURL, options: .atomic)
-                }
-                updateJob(id: jobId) { j in j["doneBytes"] = self.liveDone }
+                saveRestoreCheckpoint(next: nextIdx, entryCopied: 0, entryDataOff: 0)
                 lastCheckpoint = now
             }
         }
 
         _ = writeZeros(to: archFH, count: 1024)
         _ = writeZeros(to: heldFH, count: 1024)
-        try? archFH.synchronize()
-        try? heldFH.synchronize()
+        Darwin.fsync(archFd)
+        Darwin.fsync(heldFd)
         try? archFH.close()
         try? heldFH.close()
 
@@ -4457,14 +4663,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
 
     // MARK: - Setup WebView
 
-    private func setupWebView() {
-        let contentController = WKUserContentController()
-
-        // 1. Add native bridge message handler
-        bridge.viewController = self
-        contentController.add(bridge, name: "auraBridge")
-
-        // 2. Snapshot existing durable source IDs & loopback media server origins
+    private func makeBridgeUserScript() -> WKUserScript {
+        // Snapshot live durable source IDs, loopback media server origins, and backup status
         PicShelfLocalMediaServer.shared.ensureRunning()
         let existingIds = PicShelfMediaStore.shared.allSourceIds()
         let idsJsonData = (try? JSONSerialization.data(withJSONObject: existingIds, options: [])) ?? Data("[]".utf8)
@@ -4477,7 +4677,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         let initialFreeBytesData = (try? JSONSerialization.data(withJSONObject: [PicShelfBackupManager.shared.freeBytesJson()], options: [])) ?? Data("[\"{}\"]".utf8)
         let initialFreeBytesArr = String(data: initialFreeBytesData, encoding: .utf8) ?? "[\"{}\"]"
 
-        // 3. Inject compatibility shim for AndroidApp & iOS native bridge
+        // Inject compatibility shim for AndroidApp & iOS native bridge
         let bridgeShimScript = """
         (function() {
             window.isNativeIOS = true;
@@ -4503,6 +4703,34 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
             };
             const backupGet = function(path) {
                 return fetch(backupBase() + path).then(function(r) { return r.text(); });
+            };
+            const backupSyncRequest = function(method, path, body) {
+                var base = backupBase();
+                if (!base) return null;
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open(method, base + path, false);
+                    if (method === 'POST') xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.send(body == null ? null : body);
+                    if (xhr.status === 200) return xhr.responseText;
+                } catch (_) {}
+                return null;
+            };
+            window.__iosSetBackupStatus = function(nextJson) {
+                if (typeof nextJson !== 'string' || !nextJson) return;
+                try {
+                    var prev = window.__iosBackupStatusJson ? JSON.parse(window.__iosBackupStatusJson) : null;
+                    var next = JSON.parse(nextJson);
+                    // Never allow an out-of-order status update to move an active job's progress bar backwards
+                    if (prev && next && prev.id && prev.id === next.id &&
+                        (prev.state === 'queued' || prev.state === 'running') &&
+                        (next.state === 'queued' || next.state === 'running') &&
+                        Number(next.done) < Number(prev.done)) {
+                        next.done = prev.done;
+                        nextJson = JSON.stringify(next);
+                    }
+                } catch (_) {}
+                window.__iosBackupStatusJson = nextJson;
             };
 
             const send = function(action, payload) {
@@ -4574,7 +4802,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                 },
                 validateArchiveSources: function(idsJson) {
                     try {
-                        var arr = typeof idsJson === 'string' ? JSON.parse(idsJson) : (idsJson || []);
+                        var payload = typeof idsJson === 'string' ? idsJson : JSON.stringify(idsJson || []);
+                        var live = backupSyncRequest('POST', 'validate-sources', payload);
+                        if (live !== null) {
+                            var parsed = JSON.parse(live);
+                            return !!parsed.ok;
+                        }
+                        var arr = JSON.parse(payload);
                         if (!Array.isArray(arr)) return true;
                         for (var i = 0; i < arr.length; i++) {
                             if (!window.__iosKnownSourceIds.has(String(arr[i]))) return false;
@@ -4613,7 +4847,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                         .then(function(t) {
                             try {
                                 var parsed = JSON.parse(t);
-                                if (parsed && typeof parsed.status === 'string') window.__iosBackupStatusJson = parsed.status;
+                                if (parsed && typeof parsed.status === 'string') window.__iosSetBackupStatus(parsed.status);
                             } catch (_) {}
                             return t;
                         });
@@ -4622,6 +4856,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                     send('libraryBackupExportAbort', { id: String(jobId || '') });
                 },
                 libraryBackupStatus: function() {
+                    var live = backupSyncRequest('GET', 'status', null);
+                    if (live !== null) {
+                        window.__iosSetBackupStatus(live);
+                    }
                     return window.__iosBackupStatusJson || '{}';
                 },
                 libraryBackupCancel: function(jobId) {
@@ -4668,6 +4906,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                     send('libraryBackupClose', { token: key });
                 },
                 libraryBackupFreeBytes: function() {
+                    var live = backupSyncRequest('GET', 'free-bytes', null);
+                    if (live !== null) window.__iosBackupFreeBytesJson = live;
                     return window.__iosBackupFreeBytesJson || '{}';
                 },
                 libraryBackupRestoreStart: function(token, entriesJson, copy) {
@@ -4678,7 +4918,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
                     }), true).then(function(t) {
                         try {
                             var parsed = JSON.parse(t);
-                            if (parsed && typeof parsed.status === 'string') window.__iosBackupStatusJson = parsed.status;
+                            if (parsed && typeof parsed.status === 'string') window.__iosSetBackupStatus(parsed.status);
                         } catch (_) {}
                         return t;
                     });
@@ -4754,12 +4994,22 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         })();
         """
 
-        let userScript = WKUserScript(
+        return WKUserScript(
             source: bridgeShimScript,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
-        contentController.addUserScript(userScript)
+    }
+
+    private func setupWebView() {
+        let contentController = WKUserContentController()
+
+        // 1. Add native bridge message handler
+        bridge.viewController = self
+        contentController.add(bridge, name: "auraBridge")
+
+        // 2. Inject live compatibility shim for AndroidApp & iOS native bridge
+        contentController.addUserScript(makeBridgeUserScript())
 
         let config = WKWebViewConfiguration()
         config.userContentController = contentController
@@ -4827,6 +5077,19 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
         document.documentElement.style.setProperty('--android-status-bar-height', '\(safeTop)px');
         """
         webView.evaluateJavaScript(injectCss, completionHandler: nil)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // Recover cleanly if iOS reclaims the WebContent process while backgrounded during a large backup
+        PicShelfLocalMediaServer.shared.ensureRunning()
+        PicShelfBackupManager.shared.resumeQueuedJobsIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let controller = webView.configuration.userContentController
+            controller.removeAllUserScripts()
+            controller.addUserScript(self.makeBridgeUserScript())
+            self.loadLocalApp()
+        }
     }
 
     // MARK: - WKUIDelegate (Native Alert & Confirm Support)
