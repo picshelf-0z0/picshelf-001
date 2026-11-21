@@ -1060,10 +1060,31 @@
     return dst;
   }
 
-  // Adaptive color-aware Hair Mask for YouCam Hair Color Changer (samples crown + side-temple hair, protects face & backdrop!)
+  // Adaptive color-aware Hair Mask for YouCam Hair Color Changer (samples crown + side-temple hair, protects ENTIRE face/eyes/brows & backdrop!)
   function buildHairColorMask(orig, w, h, faces, skinMaskData) {
     if (!Array.isArray(faces) || !faces.length) return null;
     const rawMask = new Uint8ClampedArray(w * h * 4);
+
+    // Build solid full-face protection mask (NO eye/brow/lip holes so hair dye NEVER leaks onto iris or eyebrows!)
+    const solidFaceC = document.createElement('canvas');
+    solidFaceC.width = w; solidFaceC.height = h;
+    const sfCtx = solidFaceC.getContext('2d');
+    sfCtx.fillStyle = '#fff';
+    for (const face of faces) {
+      const b = face.bounds || { x: 0.2, y: 0.2, w: 0.6, h: 0.6 };
+      const fw = b.w * w, fh = b.h * h;
+      sfCtx.save();
+      sfCtx.filter = `blur(${Math.max(2, Math.round(fw * 0.025))}px)`;
+      if (tracePoly(sfCtx, face.faceContour, w, h)) {
+        sfCtx.fill();
+      } else {
+        sfCtx.beginPath();
+        sfCtx.ellipse((b.x + b.w * 0.5) * w, (b.y + b.h * 0.5) * h, fw * 0.48, fh * 0.52, 0, 0, Math.PI * 2);
+        sfCtx.fill();
+      }
+      sfCtx.restore();
+    }
+    const solidFaceData = sfCtx.getImageData(0, 0, w, h).data;
 
     // Sample corner background colors to protect backdrop from tinting
     const bgSamples = [];
@@ -1097,7 +1118,7 @@
           for (let x = x0; x <= x1; x += 2) {
             const i = (y * w + x) * 4;
             const r = orig[i], g = orig[i + 1], bl = orig[i + 2];
-            if (skinMaskData && skinMaskData[i + 3] > 50) continue;
+            if (solidFaceData[i + 3] > 50) continue;
             if (skinProbability(r, g, bl) > 0.55) continue;
             if (distBg(r, g, bl) < 28) continue;
             hrSum += r; hgSum += g; hbSum += bl; hCnt++;
@@ -1128,7 +1149,7 @@
           const ed2 = ex * ex + ey * ey;
           if (ed2 >= 1.0) continue;
           const i = (y * w + x) * 4;
-          const faceProt = skinMaskData ? (skinMaskData[i + 3] / 255) : 0;
+          const faceProt = solidFaceData[i + 3] / 255;
           if (faceProt > 0.45) continue;
           const r = orig[i], g = orig[i + 1], bl = orig[i + 2];
           const sProb = skinProbability(r, g, bl);
